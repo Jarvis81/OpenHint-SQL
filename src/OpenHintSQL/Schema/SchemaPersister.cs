@@ -48,6 +48,7 @@ namespace OpenHintSQL.Schema
             // DatabaseSchema
             nameof(DatabaseSchema.AllTableNames),
             nameof(DatabaseSchema.AllViewNames),
+            nameof(DatabaseSchema.Procedures),
         };
 
         private static readonly JsonSerializerSettings _jsonSettings = new JsonSerializerSettings
