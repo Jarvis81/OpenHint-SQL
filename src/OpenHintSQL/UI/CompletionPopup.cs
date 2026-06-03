@@ -389,7 +389,11 @@ namespace OpenHintSQL.UI
                     {
                         _currentPrefix = prefix;
                         _filteredItems = _allItems
-                            .Where(item => MatchesFilter(item.Text, prefix))
+                            .Where(item => MatchesFilter(item, prefix))
+                            .OrderByDescending(item => CompletionItemMatcher.GetRelevance(item, prefix))
+                            .ThenByDescending(item => item.Priority)
+                            .ThenBy(item => CompletionItemMatcher.GetSortText(item), StringComparer.OrdinalIgnoreCase)
+                            .ThenBy(item => item.Text, StringComparer.OrdinalIgnoreCase)
                             .ToList();
                     }
 
@@ -397,12 +401,7 @@ namespace OpenHintSQL.UI
 
                     if (_filteredItems.Count > 0)
                     {
-                        // Select the best match (prefer prefix match over substring match)
-                        var bestMatch = _filteredItems.FirstOrDefault(item =>
-                            item.Text != null &&
-                            item.Text.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
-
-                        _listBox.SelectedItem = bestMatch ?? _filteredItems[0];
+                        _listBox.SelectedItem = _filteredItems[0];
                         _listBox.ScrollIntoView(_listBox.SelectedItem);
                         ResetHorizontalScroll();
                         QueueResetHorizontalScroll();
@@ -612,22 +611,11 @@ namespace OpenHintSQL.UI
         // ═══════════════════════════════════════════════════════════════
 
         /// <summary>
-        /// Checks if a completion item text matches the given filter prefix (case-insensitive).
+        /// Checks if a completion item matches the given filter prefix (case-insensitive).
         /// </summary>
-        private static bool MatchesFilter(string text, string prefix)
+        private static bool MatchesFilter(CompletionItemData item, string prefix)
         {
-            if (string.IsNullOrEmpty(text))
-                return false;
-
-            // Prefix match
-            if (text.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            // Substring match
-            if (text.IndexOf(prefix, StringComparison.OrdinalIgnoreCase) >= 0)
-                return true;
-
-            return false;
+            return CompletionItemMatcher.Matches(item, prefix);
         }
 
         /// <summary>

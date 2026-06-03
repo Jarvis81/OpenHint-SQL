@@ -40,6 +40,10 @@ namespace OpenHintSQL.Context
         AlterTable,
         /// <summary>After EXEC/EXECUTE — expecting procedure name.</summary>
         Exec,
+        /// <summary>After sp_help - expecting a table name.</summary>
+        SpHelp,
+        /// <summary>After sp_helptext - expecting a view/procedure/function name.</summary>
+        SpHelpText,
         /// <summary>After USE - expecting a database name.</summary>
         UseDatabase,
         /// <summary>After DECLARE — expecting variable declaration.</summary>
@@ -103,6 +107,8 @@ namespace OpenHintSQL.Context
             ("CREATE TABLE", SqlContext.CreateTable),
             ("ALTER TABLE",  SqlContext.AlterTable),
             ("INSERT INTO",  SqlContext.InsertColumns),
+            ("SP_HELPTEXT",  SqlContext.SpHelpText),
+            ("SP_HELP",      SqlContext.SpHelp),
 
             // Single-word keywords
             ("SELECT",  SqlContext.SelectClause),

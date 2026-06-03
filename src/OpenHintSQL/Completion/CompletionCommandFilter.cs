@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
+using System.Windows.Input;
 using System.Windows.Threading;
 using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Language.Intellisense;
@@ -80,6 +81,8 @@ namespace OpenHintSQL.Completion
             SchemaCache.OnSchemaLoadFailed += OnSchemaLoadFailed;
             DatabaseListCache.OnDatabasesLoaded += OnDatabaseListReady;
             DatabaseListCache.OnDatabaseListLoadFailed += OnDatabaseListLoadFailed;
+            ProcedureCache.OnProceduresLoaded += OnProcedureListReady;
+            ProcedureCache.OnProcedureLoadFailed += OnProcedureListLoadFailed;
         }
 
         /// <summary>
@@ -107,6 +110,16 @@ namespace OpenHintSQL.Completion
             RefreshPopupAfterSchemaLoad();
         }
 
+        private void OnProcedureListReady(string key, ProcedureList procedures)
+        {
+            RefreshPopupAfterSchemaLoad();
+        }
+
+        private void OnProcedureListLoadFailed(string key, string message)
+        {
+            RefreshPopupAfterSchemaLoad();
+        }
+
         private void RefreshPopupAfterSchemaLoad()
         {
             try
@@ -125,7 +138,7 @@ namespace OpenHintSQL.Completion
                     {
                         if (_isDisposed || !IsPopupVisible())
                             return;
-                        TriggerCompletion(allowEmptyPrefix: true);
+                        TriggerCompletion(allowEmptyPrefix: true, forceRefresh: true);
                     }
                     catch (Exception ex)
                     {
@@ -368,6 +381,9 @@ namespace OpenHintSQL.Completion
         {
             try
             {
+                if ((Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift)
+                    return VSConstants.E_FAIL;
+
                 if (IsPopupVisible())
                 {
                     if (isUp)
@@ -431,10 +447,17 @@ namespace OpenHintSQL.Completion
                 {
                     string fullText = _textView.GetAllText();
                     int caretOffset = _textView.GetCaretPosition();
-                    if (SqlContextParser.GetContext(fullText, caretOffset) == SqlContext.UseDatabase)
-                        TriggerCompletion(allowEmptyPrefix: true);
+                    var context = SqlContextParser.GetContext(fullText, caretOffset);
+                    if (context == SqlContext.UseDatabase ||
+                        context == SqlContext.SpHelp ||
+                        context == SqlContext.SpHelpText)
+                    {
+                        TriggerCompletion(allowEmptyPrefix: true, forceRefresh: true);
+                    }
                     else
+                    {
                         DismissPopup();
+                    }
                 }
                 else if (char.IsWhiteSpace(typedChar))
                 {
@@ -502,7 +525,7 @@ namespace OpenHintSQL.Completion
         /// is true, the <see cref="MinPrefixLength"/> gate is skipped — the engine itself
         /// decides whether an empty prefix makes sense for the current SQL context.
         /// </summary>
-        private void TriggerCompletion(bool allowEmptyPrefix)
+        private void TriggerCompletion(bool allowEmptyPrefix, bool forceRefresh = false)
         {
             try
             {
@@ -523,7 +546,7 @@ namespace OpenHintSQL.Completion
                 // If the popup is already visible AND the user is still narrowing a word,
                 // just update the filter. Empty-prefix triggers (FROM␣ / JOIN␣ / dot) always
                 // need a fresh query — they swap the popup's contents entirely.
-                if (IsPopupVisible() && !string.IsNullOrEmpty(prefix) && !_popup.IsShowingStatus)
+                if (!forceRefresh && IsPopupVisible() && !string.IsNullOrEmpty(prefix) && !_popup.IsShowingStatus)
                 {
                     StartNativeCompletionSuppression();
                     _popup.UpdateFilter(prefix);
@@ -797,7 +820,11 @@ namespace OpenHintSQL.Completion
                 (item.Kind == CompletionItemKind.Table ||
                  item.Kind == CompletionItemKind.View ||
                  item.Kind == CompletionItemKind.Database ||
-                 item.Kind == CompletionItemKind.JoinSuggestion);
+                 item.Kind == CompletionItemKind.JoinSuggestion ||
+                 ((item.Kind == CompletionItemKind.Procedure ||
+                   item.Kind == CompletionItemKind.Function) &&
+                  !string.IsNullOrEmpty(item.InsertText) &&
+                  item.InsertText.StartsWith("[", StringComparison.Ordinal)));
         }
 
         private static bool IsObjectReferencePrefixChar(char c)
@@ -1025,6 +1052,8 @@ namespace OpenHintSQL.Completion
                 SchemaCache.OnSchemaLoadFailed -= OnSchemaLoadFailed;
                 DatabaseListCache.OnDatabasesLoaded -= OnDatabaseListReady;
                 DatabaseListCache.OnDatabaseListLoadFailed -= OnDatabaseListLoadFailed;
+                ProcedureCache.OnProceduresLoaded -= OnProcedureListReady;
+                ProcedureCache.OnProcedureLoadFailed -= OnProcedureListLoadFailed;
 
                 if (_popup != null)
                 {

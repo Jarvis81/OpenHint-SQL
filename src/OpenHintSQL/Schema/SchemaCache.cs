@@ -174,8 +174,7 @@ namespace OpenHintSQL.Schema
                 _loadFailures.TryRemove(key, out _);
                 Logger.Log("Schema cached: " +
                            $"{schema.Tables.Count} tables, " +
-                           $"{schema.Views.Count} views, " +
-                           $"{schema.Procedures.Count} procs");
+                           $"{schema.Views.Count} views");
 
                 // Best-effort disk write; don't block notification on it.
                 _ = SchemaPersister.TrySaveAsync(key, schema);

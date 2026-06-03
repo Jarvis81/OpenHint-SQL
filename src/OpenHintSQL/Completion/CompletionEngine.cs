@@ -72,6 +72,12 @@ namespace OpenHintSQL.Completion
                     return SortAndLimit(results, prefix);
                 }
 
+                if (!inDotContext && IsHelpObjectContext(context))
+                {
+                    AddSchemaMatches(results, prefix, context, fullText, caretOffset, server, database, connectionString);
+                    return SortAndLimit(results, prefix);
+                }
+
                 // In table/object positions, keep the popup focused on database objects.
                 // Keywords and snippets here are syntactic noise once the user is choosing
                 // a FROM/JOIN/UPDATE/INSERT target.
@@ -177,7 +183,7 @@ namespace OpenHintSQL.Completion
                     {
                         results.Add(BuildStatusItem(
                             "No active database connection",
-                            "Connect the query window to enable table and column suggestions"));
+                            "Connect the query window to enable metadata suggestions"));
                     }
                     return;
                 }
@@ -190,6 +196,18 @@ namespace OpenHintSQL.Completion
                             "Connection details unavailable",
                             "Open a connected query window and try again"));
                     }
+                    return;
+                }
+
+                if (context == SqlContext.Exec)
+                {
+                    AddProcedures(results, prefix, server, database, connectionString);
+                    return;
+                }
+
+                if (context == SqlContext.SpHelpText)
+                {
+                    AddHelpTextObjects(results, prefix, server, database, connectionString);
                     return;
                 }
 
@@ -250,6 +268,10 @@ namespace OpenHintSQL.Completion
                             AddTablesAndViews(results, schema, prefix, includeAlias: false, excludeCurrentJoin: false, fullText: fullText, caretOffset: caretOffset);
                         break;
 
+                    case SqlContext.SpHelp:
+                        AddHelpTables(results, schema, prefix);
+                        break;
+
                     // ── Column-position contexts ────────────────────────────────
                     case SqlContext.SelectClause:
                     case SqlContext.WhereClause:
@@ -262,10 +284,6 @@ namespace OpenHintSQL.Completion
                         break;
 
                     // ── Other ───────────────────────────────────────────────────
-                    case SqlContext.Exec:
-                        AddProcedures(results, schema, prefix);
-                        break;
-
                     // TopLevel / Unknown / CreateTable / AlterTable / DeclareVariable:
                     // no schema suggestions — keyword/snippet matches above are enough.
                 }
@@ -430,6 +448,8 @@ namespace OpenHintSQL.Completion
                 case SqlContext.HavingClause:
                 case SqlContext.SetClause:
                 case SqlContext.Exec:
+                case SqlContext.SpHelp:
+                case SqlContext.SpHelpText:
                     return true;
                 default:
                     return false;
@@ -535,7 +555,7 @@ namespace OpenHintSQL.Completion
                 InsertText = insertText,
                 Description = $"View: {insertText}",
                 Kind = CompletionItemKind.View,
-                Priority = 15,
+                Priority = 10,
                 IconKey = "View"
             };
         }
@@ -554,9 +574,9 @@ namespace OpenHintSQL.Completion
             if (table == null)
                 return false;
 
-            return MatchesPrefix(table.FullName, prefix) ||
-                   MatchesPrefix(table.Name, prefix) ||
-                   MatchesPrefix(table.BracketedName, prefix);
+            return CompletionItemMatcher.MatchesName(table.FullName, prefix) ||
+                   CompletionItemMatcher.MatchesName(table.Name, prefix) ||
+                   CompletionItemMatcher.MatchesName(table.BracketedName, prefix);
         }
 
         private static HashSet<string> GetUsedAliases(
@@ -685,9 +705,7 @@ namespace OpenHintSQL.Completion
         {
             if (targetTable == null || ReferenceEquals(targetTable, scopedRef.Table))
                 return;
-            if (!MatchesPrefix(targetTable.FullName, prefix) &&
-                !MatchesPrefix(targetTable.Name, prefix) &&
-                !MatchesPrefix(targetTable.BracketedName, prefix))
+            if (!MatchesTablePrefix(targetTable, prefix))
                 return;
 
             // First-FK-wins per target: avoid showing both Customers→Orders and Orders→Customers.
@@ -967,32 +985,198 @@ namespace OpenHintSQL.Completion
             }
         }
 
-        /// <summary>
-        /// Adds matching stored procedures from the schema cache.
-        /// </summary>
-        private static void AddProcedures(
+        private static void AddHelpTables(
             List<CompletionItemData> results,
             DatabaseSchema schema,
             string prefix)
         {
             try
             {
-                var matches = schema.GetMatchingObjects(prefix);
-                if (matches != null)
+                if (schema == null || !schema.IsLoaded)
+                    return;
+
+                if (schema.Tables.Count == 0)
                 {
-                    foreach (var item in matches)
-                    {
-                        if (item.Kind == CompletionItemKind.Procedure || item.Kind == CompletionItemKind.Function)
-                        {
-                            results.Add(item);
-                        }
-                    }
+                    results.Add(BuildStatusItem(
+                        "No user tables found",
+                        "Check the active database in the query window"));
+                    return;
+                }
+
+                foreach (var table in schema.Tables.Values)
+                {
+                    if (MatchesTablePrefix(table, prefix))
+                        results.Add(BuildShortObjectItem(table, CompletionItemKind.Table, "Table", "Table"));
                 }
             }
             catch (Exception ex)
             {
-                Logger.Error("AddProcedures failed", ex);
+                Logger.Error("AddHelpTables failed", ex);
             }
+        }
+
+        private static void AddHelpTextObjects(
+            List<CompletionItemData> results,
+            string prefix,
+            string server,
+            string database,
+            string connectionString)
+        {
+            int initialCount = results.Count;
+            bool proceduresLoaded = AddProcedures(
+                results,
+                prefix,
+                server,
+                database,
+                connectionString,
+                shortInsert: true,
+                addStatusWhenLoading: false);
+
+            var schema = SchemaCache.GetOrLoad(server, database, connectionString);
+            bool schemaLoaded = schema != null && schema.IsLoaded;
+            if (schemaLoaded)
+            {
+                foreach (var view in schema.Views.Values)
+                {
+                    if (MatchesTablePrefix(view, prefix))
+                        results.Add(BuildShortObjectItem(view, CompletionItemKind.View, "View", "View"));
+                }
+            }
+
+            if (results.Count > initialCount)
+                return;
+
+            if (!schemaLoaded)
+            {
+                var loadError = SchemaCache.GetLastLoadError(server, database, connectionString);
+                results.Add(BuildStatusItem(
+                    string.IsNullOrWhiteSpace(loadError) ? "Loading views..." : "View metadata load failed",
+                    string.IsNullOrWhiteSpace(loadError) ? $"{server} / {database}" : ShortenStatusDescription(loadError)));
+                return;
+            }
+
+            if (!proceduresLoaded)
+            {
+                var loadError = ProcedureCache.GetLastLoadError(server, database, connectionString);
+                results.Add(BuildStatusItem(
+                    string.IsNullOrWhiteSpace(loadError) ? "Loading stored procedures..." : "Procedure load failed",
+                    string.IsNullOrWhiteSpace(loadError) ? $"{server} / {database}" : ShortenStatusDescription(loadError)));
+                return;
+            }
+
+            if (string.IsNullOrEmpty(prefix))
+            {
+                results.Add(BuildStatusItem(
+                    "No views or stored procedures found",
+                    "Check the active database in the query window"));
+            }
+        }
+
+        private static CompletionItemData BuildShortObjectItem(
+            TableInfo table,
+            CompletionItemKind kind,
+            string label,
+            string iconKey)
+        {
+            var insertText = QuoteIdentifier(table?.Name);
+            return new CompletionItemData
+            {
+                Text = table?.Name,
+                InsertText = insertText,
+                Description = $"{label}: {table?.BracketedName}",
+                Kind = kind,
+                Priority = 10,
+                IconKey = iconKey
+            };
+        }
+
+        /// <summary>
+        /// Adds matching stored procedures/functions from the lazy procedure cache.
+        /// </summary>
+        private static void AddProcedures(
+            List<CompletionItemData> results,
+            string prefix,
+            string server,
+            string database,
+            string connectionString)
+        {
+            AddProcedures(
+                results,
+                prefix,
+                server,
+                database,
+                connectionString,
+                shortInsert: false,
+                addStatusWhenLoading: true);
+        }
+
+        private static bool AddProcedures(
+            List<CompletionItemData> results,
+            string prefix,
+            string server,
+            string database,
+            string connectionString,
+            bool shortInsert,
+            bool addStatusWhenLoading)
+        {
+            try
+            {
+                var procedures = ProcedureCache.GetOrLoad(server, database, connectionString);
+                if (procedures == null || !procedures.IsLoaded)
+                {
+                    if (addStatusWhenLoading)
+                    {
+                        var loadError = ProcedureCache.GetLastLoadError(server, database, connectionString);
+                        results.Add(BuildStatusItem(
+                            string.IsNullOrWhiteSpace(loadError) ? "Loading stored procedures..." : "Procedure load failed",
+                            string.IsNullOrWhiteSpace(loadError) ? $"{server} / {database}" : ShortenStatusDescription(loadError)));
+                    }
+                    return false;
+                }
+
+                if (procedures.Items.Count == 0)
+                {
+                    if (addStatusWhenLoading)
+                    {
+                        results.Add(BuildStatusItem(
+                            "No stored procedures found",
+                            "Check the active database in the query window"));
+                    }
+                    return true;
+                }
+
+                foreach (var procedure in procedures.Items)
+                {
+                    var item = BuildProcedureItem(procedure, shortInsert);
+                    if (CompletionItemMatcher.Matches(item, prefix))
+                        results.Add(item);
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("AddProcedures failed", ex);
+                return false;
+            }
+        }
+
+        private static CompletionItemData BuildProcedureItem(ProcedureInfo procedure, bool shortInsert)
+        {
+            bool isFunction = procedure?.ObjectType != null &&
+                procedure.ObjectType.IndexOf("FUNCTION", StringComparison.OrdinalIgnoreCase) >= 0;
+            var kind = isFunction ? CompletionItemKind.Function : CompletionItemKind.Procedure;
+            var label = isFunction ? "Function" : "Procedure";
+
+            return new CompletionItemData
+            {
+                Text = shortInsert ? procedure?.Name : procedure?.FullName,
+                InsertText = shortInsert ? QuoteIdentifier(procedure?.Name) : procedure?.Name,
+                Description = $"{label}: {procedure?.FullName}",
+                Kind = kind,
+                Priority = shortInsert ? 10 : 20,
+                IconKey = label
+            };
         }
 
         /// <summary>
@@ -1016,6 +1200,8 @@ namespace OpenHintSQL.Completion
                 case SqlContext.HavingClause:
                 case SqlContext.SetClause:
                 case SqlContext.Exec:
+                case SqlContext.SpHelp:
+                case SqlContext.SpHelpText:
                 case SqlContext.UseDatabase:
                     return true;
                 default:
@@ -1041,6 +1227,11 @@ namespace OpenHintSQL.Completion
                 default:
                     return false;
             }
+        }
+
+        private static bool IsHelpObjectContext(SqlContext context)
+        {
+            return context == SqlContext.SpHelp || context == SqlContext.SpHelpText;
         }
 
         private static readonly Regex ObjectPositionKeywordPattern = new Regex(
@@ -1139,8 +1330,9 @@ namespace OpenHintSQL.Completion
 
             // Sort: exact prefix match first → priority desc → alphabetical
             var sorted = deduplicated
-                .OrderByDescending(item => GetPrefixRelevance(item, prefix))
+                .OrderByDescending(item => CompletionItemMatcher.GetRelevance(item, prefix))
                 .ThenByDescending(item => item.Priority)
+                .ThenBy(item => CompletionItemMatcher.GetSortText(item), StringComparer.OrdinalIgnoreCase)
                 .ThenBy(item => item.Text, StringComparer.OrdinalIgnoreCase)
                 .Take(MaxResults)
                 .ToList();
@@ -1148,60 +1340,5 @@ namespace OpenHintSQL.Completion
             return sorted;
         }
 
-        private static int GetPrefixRelevance(CompletionItemData item, string prefix)
-        {
-            if (item == null || string.IsNullOrEmpty(prefix))
-                return 0;
-
-            var candidates = new[]
-            {
-                item.Text,
-                item.InsertText,
-                ExtractObjectName(item.Text),
-                ExtractObjectName(item.InsertText)
-            };
-
-            foreach (var candidate in candidates)
-            {
-                if (string.Equals(candidate, prefix, StringComparison.OrdinalIgnoreCase))
-                    return 4;
-            }
-
-            foreach (var candidate in candidates)
-            {
-                if (!string.IsNullOrEmpty(candidate) &&
-                    candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                {
-                    return 3;
-                }
-            }
-
-            foreach (var candidate in candidates)
-            {
-                if (!string.IsNullOrEmpty(candidate) &&
-                    candidate.IndexOf(prefix, StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    return 1;
-                }
-            }
-
-            return 0;
-        }
-
-        private static string ExtractObjectName(string text)
-        {
-            if (string.IsNullOrWhiteSpace(text))
-                return text;
-
-            var firstToken = text.Trim().Split(new[] { ' ', '\t', '\r', '\n' }, 2)[0];
-            var lastDot = firstToken.LastIndexOf('.');
-            if (lastDot >= 0 && lastDot < firstToken.Length - 1)
-                firstToken = firstToken.Substring(lastDot + 1);
-
-            if (firstToken.Length >= 2 && firstToken[0] == '[' && firstToken[firstToken.Length - 1] == ']')
-                firstToken = firstToken.Substring(1, firstToken.Length - 2).Replace("]]", "]");
-
-            return firstToken;
-        }
     }
 }

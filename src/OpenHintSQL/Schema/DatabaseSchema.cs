@@ -159,7 +159,7 @@ namespace OpenHintSQL.Schema
                     InsertText = v.BracketedName,
                     Description = $"View: {v.BracketedName}",
                     Kind = CompletionItemKind.View,
-                    Priority = 15,
+                    Priority = 10,
                     IconKey = "View"
                 };
                 _trieIndex.Insert(v.FullName, item);
