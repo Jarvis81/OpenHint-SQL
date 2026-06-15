@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
-    <Identity Id="OpenHintSQL.63D8CFAD-D1FF-40EB-80DB-7728DEDD7A91" Version="1.0.1" Language="en-US" Publisher="OpenHintSQL" />
+    <Identity Id="OpenHintSQL.63D8CFAD-D1FF-40EB-80DB-7728DEDD7A91" Version="1.1.0" Language="en-US" Publisher="OpenHintSQL" />
     <DisplayName>OpenHint SQL</DisplayName>
     <Description xml:space="preserve">Open-source SQL autocomplete and syntax suggestion extension for SSMS 18-22.</Description>
     <MoreInfo>https://github.com/Jarvis81/OpenHint-SQL</MoreInfo>

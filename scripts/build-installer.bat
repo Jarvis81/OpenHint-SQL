@@ -27,7 +27,7 @@ REM    - Clears per-version MEF + extension caches after install
 REM    - On uninstall: removes only our files from every installed version
 REM ============================================================
 
-set "VERSION=1.0.1"
+set "VERSION=1.1.0"
 set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%..") do set "REPO_ROOT=%%~fI"
 set "BUILD_DIR=%REPO_ROOT%\src\OpenHintSQL\bin\Release\net48"
@@ -45,9 +45,32 @@ echo  ========================================
 echo  Version : %VERSION%
 echo.
 
-REM Step 1: Build Release
+REM Step 1: Build Release (full MSBuild — VSCT compile needs .NET Framework MSBuild)
 echo  [1/5] Building Release...
-dotnet build "%REPO_ROOT%\src\OpenHintSQL\OpenHintSQL.csproj" -c Release --nologo -v quiet
+set "MSBUILD_EXE="
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist "%VSWHERE%" (
+    for /f "usebackq tokens=*" %%I in (`"%VSWHERE%" -latest -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe"`) do (
+        if not defined MSBUILD_EXE set "MSBUILD_EXE=%%I"
+    )
+)
+if not defined MSBUILD_EXE (
+    for %%P in (
+        "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe"
+        "%ProgramFiles%\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe"
+        "%ProgramFiles%\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
+        "%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe"
+    ) do (
+        if exist %%P set "MSBUILD_EXE=%%~P"
+    )
+)
+if not defined MSBUILD_EXE (
+    echo  ERROR: Could not find MSBuild from Visual Studio 2022.
+    goto :fail
+)
+"%MSBUILD_EXE%" "%REPO_ROOT%\src\OpenHintSQL\OpenHintSQL.csproj" -t:Restore -p:Configuration=Release -nologo -v:quiet
+if %ERRORLEVEL% neq 0 goto :fail
+"%MSBUILD_EXE%" "%REPO_ROOT%\src\OpenHintSQL\OpenHintSQL.csproj" -p:Configuration=Release -nologo -v:quiet
 if %ERRORLEVEL% neq 0 (
     echo  ERROR: Build failed. Fix compilation errors before packaging.
     goto :fail

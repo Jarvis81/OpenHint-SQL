@@ -1,7 +1,9 @@
 [$RootKey$\Packages\{63D8CFAD-D1FF-40EB-80DB-7728DEDD7A91}]
 @="OpenHintSQLPackage"
-"InprocessServer32"="$PackageFolder$\OpenHintSQL.dll"
+; Managed package: InprocServer32 must point to the CLR host, not the managed DLL.
+"InprocServer32"="$WinDir$\System32\mscoree.dll"
 "Class"="OpenHintSQL.OpenHintSQLPackage"
+"CodeBase"="$PackageFolder$\OpenHintSQL.dll"
 "AllowsBackgroundLoading"=dword:00000001
 
 [$RootKey$\AutoLoadPackages\{adfc4e64-0397-11d1-9f4e-00a0c9110047}]
@@ -16,6 +18,8 @@
 [$RootKey$\AutoLoadPackages\{f1536ef8-92ec-443c-9ed7-fdadf150da82}]
 "{63D8CFAD-D1FF-40EB-80DB-7728DEDD7A91}"=dword:00000002
 
-; ShellInitialized — {e8a3a1e3-fa96-4bae-a76e-41f7b0456805}
 [$RootKey$\AutoLoadPackages\{e8a3a1e3-fa96-4bae-a76e-41f7b0456805}]
 "{63D8CFAD-D1FF-40EB-80DB-7728DEDD7A91}"=dword:00000002
+
+[$RootKey$\Menus]
+"{63D8CFAD-D1FF-40EB-80DB-7728DEDD7A91}"=", Menus.ctmenu, 1"

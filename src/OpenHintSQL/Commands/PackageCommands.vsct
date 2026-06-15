@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CommandTable xmlns="http://schemas.microsoft.com/VisualStudio/2005-10-18/CommandTable" xmlns:xs="http://www.w3.org/2001/XMLSchema-instance">
+
+  <Extern href="stdidcmd.h" />
+  <Extern href="vsshlids.h" />
+
+  <Commands package="guidOpenHintSqlPackage">
+    <Groups>
+      <!-- Placed into the SSMS result-grid context menu (the one with Copy / Copy with
+           Headers). GUID_SQLEditorGroup + IDM_SQLWB_SQLRESGRID_CONTEXT(112) verified
+           from SQLEditors.dll on SSMS 22.6; stable across SSMS 18–22. -->
+      <Group guid="guidOpenHintSqlCmdSet" id="OpenHintSqlResultGridGroup" priority="0x0100">
+        <Parent guid="guidSqlEditorMenuGroup" id="IDM_SQLWB_SQLRESGRID_CONTEXT" />
+      </Group>
+    </Groups>
+
+    <Buttons>
+      <Button guid="guidOpenHintSqlCmdSet" id="GenerateInsertScriptCmdId" priority="0x0100" type="Button">
+        <Parent guid="guidOpenHintSqlCmdSet" id="OpenHintSqlResultGridGroup" />
+        <Strings>
+          <ButtonText>Generate as INSERT script</ButtonText>
+          <CommandName>OpenHintSql.GenerateInsertScript</CommandName>
+        </Strings>
+      </Button>
+    </Buttons>
+  </Commands>
+
+  <Symbols>
+    <GuidSymbol name="guidOpenHintSqlPackage" value="{63D8CFAD-D1FF-40EB-80DB-7728DEDD7A91}" />
+
+    <GuidSymbol name="guidOpenHintSqlCmdSet" value="{7B5A2E1C-3D4F-4F6A-9B8C-1E2D3C4B5A6F}">
+      <IDSymbol name="OpenHintSqlResultGridGroup" value="0x1030" />
+      <IDSymbol name="GenerateInsertScriptCmdId" value="0x0100" />
+    </GuidSymbol>
+
+    <!-- SSMS result-grid context menu — verified from SQLEditors.dll SSMS 22.6 -->
+    <GuidSymbol name="guidSqlEditorMenuGroup" value="{33F13AC3-80BB-4ECB-85BC-225435603A5E}">
+      <IDSymbol name="IDM_SQLWB_SQLRESGRID_CONTEXT" value="112" />
+    </GuidSymbol>
+  </Symbols>
+
+</CommandTable>

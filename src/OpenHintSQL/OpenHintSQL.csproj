@@ -27,6 +27,10 @@
   <ItemGroup>
     <Reference Include="System.ComponentModel.Composition" />
     <Reference Include="Microsoft.CSharp" />
+    <!-- WinForms types used by the result-grid context-menu injector
+         (ContextMenuStrip, ToolStripMenuItem). -->
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="WindowsFormsIntegration" />
   </ItemGroup>
 
   <ItemGroup>
@@ -84,6 +88,13 @@
       <HintPath>$(SsmsInstallDir)\Microsoft.SqlServer.RegSvrEnum.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- IGridControl, IGridStorage, BlockOfCellsCollection — used by the
+         "Generate as INSERT script" feature. SSMS ships this on disk; the
+         reference is resolved at build time from the configured SSMS install. -->
+    <Reference Include="Microsoft.SqlServer.GridControl" Condition="Exists('$(SsmsInstallDir)\Microsoft.SqlServer.GridControl.dll')">
+      <HintPath>$(SsmsInstallDir)\Microsoft.SqlServer.GridControl.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <!-- Content files included in VSIX -->
@@ -92,6 +103,25 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <IncludeInVSIX>true</IncludeInVSIX>
     </Content>
+  </ItemGroup>
+
+  <!-- VSCT command table compiled into Menus.ctmenu resource referenced by
+       ProvideMenuResource on OpenHintSQLPackage. The VSPackage.resx must be
+       embedded with MergeWithCTO=true so the .cto bytes are merged into the
+       managed resource stream the package class loads at runtime. -->
+  <ItemGroup>
+    <VSCTCompile Include="Commands\PackageCommands.vsct">
+      <ResourceName>Menus.ctmenu</ResourceName>
+    </VSCTCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <!-- VSPackage.resx is auto-included by the .NET SDK; override metadata
+         so MergeCtoResource merges the .cto bytes into this resource stream. -->
+    <EmbeddedResource Update="VSPackage.resx">
+      <MergeWithCTO>true</MergeWithCTO>
+      <ManifestResourceName>VSPackage</ManifestResourceName>
+      <Generator></Generator>
+    </EmbeddedResource>
   </ItemGroup>
 
   <ItemGroup>

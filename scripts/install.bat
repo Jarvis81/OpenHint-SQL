@@ -38,9 +38,44 @@ if %ERRORLEVEL% equ 0 (
     exit /b 1
 )
 
+REM ── Locate MSBuild ─────────────────────────────────────────
+REM VSCT compilation requires the full .NET Framework MSBuild that ships with
+REM Visual Studio / Build Tools — the .NET Core "dotnet build" CLI cannot run
+REM the VSSDK task that turns Commands\PackageCommands.vsct into the Menus.ctmenu
+REM resource. Prefer vswhere if available so we pick up whatever VS edition the
+REM user has installed.
+set "MSBUILD_EXE="
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist "%VSWHERE%" (
+    for /f "usebackq tokens=*" %%I in (`"%VSWHERE%" -latest -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe"`) do (
+        if not defined MSBUILD_EXE set "MSBUILD_EXE=%%I"
+    )
+)
+if not defined MSBUILD_EXE (
+    for %%P in (
+        "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe"
+        "%ProgramFiles%\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe"
+        "%ProgramFiles%\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
+        "%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe"
+    ) do (
+        if exist %%P set "MSBUILD_EXE=%%~P"
+    )
+)
+if not defined MSBUILD_EXE (
+    echo  ERROR: Could not find MSBuild from Visual Studio 2022.
+    echo  Install Visual Studio 2022 ^(any edition^) or the Build Tools with
+    echo  the "Visual Studio extension development" workload, then retry.
+    pause
+    exit /b 1
+)
+
 REM ── Auto-build project ─────────────────────────────────────
-echo  Building OpenHintSQL (Release)...
-dotnet build "%REPO_ROOT%\src\OpenHintSQL\OpenHintSQL.csproj" -c Release --nologo --verbosity:minimal > "%BUILD_LOG%" 2>&1
+REM -t:Rebuild (not incremental) ensures Menus.ctmenu is re-embedded correctly.
+echo  Building OpenHintSQL (Release, full rebuild)...
+"%MSBUILD_EXE%" "%REPO_ROOT%\src\OpenHintSQL\OpenHintSQL.csproj" -t:Restore -p:Configuration=Release -nologo -verbosity:minimal > "%BUILD_LOG%" 2>&1
+if %ERRORLEVEL% equ 0 (
+    "%MSBUILD_EXE%" "%REPO_ROOT%\src\OpenHintSQL\OpenHintSQL.csproj" -t:Rebuild -p:Configuration=Release -nologo -verbosity:minimal >> "%BUILD_LOG%" 2>&1
+)
 if %ERRORLEVEL% neq 0 (
     echo  ERROR: Build failed! Check the errors above.
     type "%BUILD_LOG%"
