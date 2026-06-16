@@ -439,33 +439,13 @@ namespace OpenHintSQL.Connection
         }
 
         private static object Invoke(object instance, Type interfaceType, string methodName, params object[] args)
-        {
-            if (instance == null)
-                return null;
-
-            try
-            {
-                var method = interfaceType?.GetMethod(methodName);
-                if (method != null && interfaceType.IsInstanceOfType(instance))
-                    return method.Invoke(instance, args);
-            }
-            catch (Exception ex)
-            {
-                Logger.Warn($"Interface invoke failed for {methodName}: {ex.Message}");
-            }
-
-            return Invoke(instance, methodName, args);
-        }
+            => ReflectionHelpers.Invoke(instance, interfaceType, methodName, args);
 
         private static object Invoke(object instance, string methodName, params object[] args)
-        {
-            return instance?.GetType().GetMethod(methodName)?.Invoke(instance, args);
-        }
+            => ReflectionHelpers.Invoke(instance, methodName, args);
 
         private static object GetPropertyValue(object instance, string propertyName)
-        {
-            return instance?.GetType().GetProperty(propertyName)?.GetValue(instance);
-        }
+            => ReflectionHelpers.GetPropertyValue(instance, propertyName);
 
         private static string GetFirstStringProperty(object instance, params string[] propertyNames)
         {
@@ -509,89 +489,10 @@ namespace OpenHintSQL.Connection
             return null;
         }
 
-        /// <summary>
-        /// Finds an already-loaded assembly by partial name.
-        /// </summary>
-        private static Assembly FindLoadedAssembly(string partialName)
-        {
-            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                try
-                {
-                    if (assembly.FullName.StartsWith(partialName + ",", StringComparison.OrdinalIgnoreCase) ||
-                        assembly.GetName().Name.Equals(partialName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return assembly;
-                    }
-                }
-                catch
-                {
-                    // Skip assemblies that throw on metadata access, such as dynamic assemblies.
-                }
-            }
-
-            return null;
-        }
-
         private static Type FindLoadedType(string fullTypeName)
-        {
-            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                try
-                {
-                    var type = assembly.GetType(fullTypeName, throwOnError: false);
-                    if (type != null)
-                        return type;
-                }
-                catch
-                {
-                    // Skip assemblies that throw on metadata access.
-                }
-            }
-
-            return null;
-        }
+            => ReflectionHelpers.FindLoadedType(fullTypeName);
 
         private static Assembly TryLoadSsmsAssembly(string simpleName)
-        {
-            try
-            {
-                var loaded = FindLoadedAssembly(simpleName);
-                if (loaded != null)
-                    return loaded;
-
-                return Assembly.Load(simpleName);
-            }
-            catch
-            {
-                // Fall through to LoadFrom below.
-            }
-
-            try
-            {
-                var baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
-                var path = System.IO.Path.Combine(baseDirectory, simpleName + ".dll");
-                if (!System.IO.File.Exists(path))
-                {
-                    var processDirectory = System.IO.Path.GetDirectoryName(
-                        System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName);
-                    if (!string.IsNullOrEmpty(processDirectory))
-                        path = System.IO.Path.Combine(processDirectory, simpleName + ".dll");
-                }
-
-                if (System.IO.File.Exists(path))
-                {
-                    var assembly = Assembly.LoadFrom(path);
-                    Logger.Diagnostic($"Loaded SSMS assembly {simpleName} from {path}");
-                    return assembly;
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Warn($"Could not load SSMS assembly {simpleName}: {ex.Message}");
-            }
-
-            return null;
-        }
+            => ReflectionHelpers.TryLoadSsmsAssembly(simpleName);
     }
 }
