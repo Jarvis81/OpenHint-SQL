@@ -795,6 +795,57 @@ namespace OpenHintSQL.Completion
             return result;
         }
 
+        /// <summary>
+        /// Builds a comma-separated list of alias.column items for all tables referenced
+        /// in <paramref name="fullText"/>. Used to expand SELECT * to an explicit column list.
+        /// Returns <c>null</c> when expansion is not possible (schema not loaded, no tables found).
+        /// </summary>
+        public static string GetStarExpansion(string fullText, DatabaseSchema schema)
+        {
+            if (schema == null || !schema.IsLoaded || string.IsNullOrEmpty(fullText))
+                return null;
+
+            try
+            {
+                var scopedTables = ResolveScopedTables(fullText, schema);
+
+                if (scopedTables.Count == 0)
+                {
+                    var referencedTables = GetReferencedTables(fullText, schema);
+                    if (referencedTables.Count == 0)
+                        return null;
+
+                    var fallbackCols = new List<string>();
+                    foreach (var tableName in referencedTables)
+                    {
+                        var cols = schema.GetColumnsForTable(tableName);
+                        if (cols != null)
+                            foreach (var col in cols)
+                                fallbackCols.Add(col.InsertText);
+                    }
+                    return fallbackCols.Count > 0 ? string.Join(", ", fallbackCols) : null;
+                }
+
+                var columns = new List<string>();
+                foreach (var scoped in scopedTables)
+                {
+                    var cols = schema.GetColumnsForTable(scoped.Table.FullName);
+                    if (cols == null) continue;
+
+                    string aliasPrefix = scoped.EffectiveAlias + ".";
+                    foreach (var col in cols)
+                        columns.Add(aliasPrefix + col.InsertText);
+                }
+
+                return columns.Count > 0 ? string.Join(", ", columns) : null;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("GetStarExpansion failed", ex);
+                return null;
+            }
+        }
+
         private static string GetCompletedJoinScopeText(string fullText, int caretOffset)
         {
             if (string.IsNullOrEmpty(fullText) || caretOffset <= 0)
@@ -989,8 +1040,14 @@ namespace OpenHintSQL.Completion
         {
             try
             {
+                // Scope alias/table resolution to the current statement only.
+                // Using fullText would bleed aliases from other SELECT blocks into
+                // the current WHERE/SELECT context (the reported bug).
+                int stmtStart = FindCurrentStatementStart(fullText, caretOffset);
+                string stmtText = fullText.Substring(stmtStart, caretOffset - stmtStart);
+
                 // Check if we are in a dot context (e.g. "u.Name")
-                var tableContext = SqlContextParser.GetTableContext(fullText, caretOffset);
+                var tableContext = SqlContextParser.GetTableContext(stmtText, stmtText.Length);
                 if (tableContext != null)
                 {
                     string targetTable = !string.IsNullOrEmpty(tableContext.ResolvedTable)
@@ -1012,7 +1069,7 @@ namespace OpenHintSQL.Completion
                 }
 
                 // If not in a dot context, find tables referenced in the script with their aliases
-                var scopedTables = ResolveScopedTables(fullText, schema);
+                var scopedTables = ResolveScopedTables(stmtText, schema);
                 if (scopedTables.Count > 0)
                 {
                     foreach (var scoped in scopedTables)
@@ -1042,7 +1099,7 @@ namespace OpenHintSQL.Completion
                 else
                 {
                     // Fallback: word-based table detection when no explicit FROM/JOIN found
-                    var referencedTables = GetReferencedTables(fullText, schema);
+                    var referencedTables = GetReferencedTables(stmtText, schema);
                     if (referencedTables.Count > 0)
                     {
                         foreach (var tableName in referencedTables)
