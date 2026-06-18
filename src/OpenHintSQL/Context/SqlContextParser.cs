@@ -107,6 +107,7 @@ namespace OpenHintSQL.Context
             ("CREATE TABLE", SqlContext.CreateTable),
             ("ALTER TABLE",  SqlContext.AlterTable),
             ("INSERT INTO",  SqlContext.InsertColumns),
+            ("DELETE FROM",  SqlContext.UpdateTarget),   // DELETE FROM <table> — no alias
             ("SP_HELPTEXT",  SqlContext.SpHelpText),
             ("SP_HELP",      SqlContext.SpHelp),
 

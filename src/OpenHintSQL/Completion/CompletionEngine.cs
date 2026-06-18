@@ -593,9 +593,13 @@ namespace OpenHintSQL.Completion
             if (limit == 0)
                 return aliases;
 
+            // Restrict alias lookup to the current statement so aliases from an
+            // earlier SELECT/INSERT/UPDATE in the same script are not treated as
+            // conflicts (which would cause unnecessary ta → ta1 suffixes).
+            int stmtStart = FindCurrentStatementStart(fullText, limit);
             var scopeText = excludeCurrentJoin
                 ? GetCompletedJoinScopeText(fullText, limit)
-                : fullText.Substring(0, limit);
+                : fullText.Substring(stmtStart, limit - stmtStart);
 
             foreach (var scoped in ResolveScopedTables(scopeText, schema))
             {
@@ -623,6 +627,16 @@ namespace OpenHintSQL.Completion
 
         private static readonly Regex JoinKeywordPattern = new Regex(
             @"\b(?:JOIN|APPLY)\b",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        // Matches GO batch separator on its own line (SSMS convention).
+        private static readonly Regex BatchSeparatorPattern = new Regex(
+            @"(?m)^\s*GO\b[^\r\n]*$",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        // Top-level DML keywords that start a new SQL statement.
+        private static readonly Regex StatementStartPattern = new Regex(
+            @"\b(?:SELECT|INSERT|UPDATE|DELETE|MERGE)\b",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         /// <summary>
@@ -787,13 +801,73 @@ namespace OpenHintSQL.Completion
                 return string.Empty;
 
             int limit = Math.Min(Math.Max(caretOffset, 0), fullText.Length);
-            var beforeCaret = fullText.Substring(0, limit);
-            var matches = JoinKeywordPattern.Matches(beforeCaret);
+
+            // Restrict to the current statement so previous queries don't pollute the scope.
+            int stmtStart = FindCurrentStatementStart(fullText, limit);
+            var stmtText = fullText.Substring(stmtStart, limit - stmtStart);
+
+            var matches = JoinKeywordPattern.Matches(stmtText);
             if (matches.Count == 0)
-                return beforeCaret;
+                return stmtText;
 
             var currentJoin = matches[matches.Count - 1];
-            return beforeCaret.Substring(0, currentJoin.Index);
+            return stmtText.Substring(0, currentJoin.Index);
+        }
+
+        /// <summary>
+        /// Returns the character index in <paramref name="fullText"/> where the SQL
+        /// statement that contains the caret begins. Scopes to the current GO batch
+        /// and then finds the last SELECT/INSERT/UPDATE/DELETE/MERGE keyword at
+        /// paren-depth 0, also resetting on bare semicolons.
+        /// </summary>
+        private static int FindCurrentStatementStart(string fullText, int limit)
+        {
+            if (string.IsNullOrEmpty(fullText) || limit <= 0)
+                return 0;
+
+            limit = Math.Min(limit, fullText.Length);
+            var textBeforeCaret = fullText.Substring(0, limit);
+
+            // Step 1: jump past the last GO batch separator.
+            int batchStart = 0;
+            var goMatches = BatchSeparatorPattern.Matches(textBeforeCaret);
+            if (goMatches.Count > 0)
+            {
+                var lastGo = goMatches[goMatches.Count - 1];
+                batchStart = lastGo.Index + lastGo.Length;
+            }
+
+            // Step 2: within the batch, find the last DML keyword at paren-depth 0.
+            var batchText = textBeforeCaret.Substring(batchStart);
+            int depth = 0;
+            int lastStmtOffset = 0;
+            int prevScanPos = 0;
+
+            var kwMatches = StatementStartPattern.Matches(batchText);
+            foreach (Match m in kwMatches)
+            {
+                for (int i = prevScanPos; i < m.Index; i++)
+                {
+                    char c = batchText[i];
+                    if (c == '(') depth++;
+                    else if (c == ')' && depth > 0) depth--;
+                    else if (c == ';' && depth == 0) lastStmtOffset = i + 1;
+                }
+                if (depth == 0)
+                    lastStmtOffset = m.Index;
+                prevScanPos = m.Index + m.Length;
+            }
+
+            // Check for trailing ';' after the last keyword.
+            for (int i = prevScanPos; i < batchText.Length; i++)
+            {
+                char c = batchText[i];
+                if (c == '(') depth++;
+                else if (c == ')' && depth > 0) depth--;
+                else if (c == ';' && depth == 0) lastStmtOffset = i + 1;
+            }
+
+            return batchStart + lastStmtOffset;
         }
 
         private static TableInfo ResolveTable(DatabaseSchema schema, string schemaName, string tableName)
@@ -937,20 +1011,29 @@ namespace OpenHintSQL.Completion
                     return;
                 }
 
-                // If not in a dot context, find tables referenced in the script
-                var referencedTables = GetReferencedTables(fullText, schema);
-                if (referencedTables.Count > 0)
+                // If not in a dot context, find tables referenced in the script with their aliases
+                var scopedTables = ResolveScopedTables(fullText, schema);
+                if (scopedTables.Count > 0)
                 {
-                    foreach (var tableName in referencedTables)
+                    foreach (var scoped in scopedTables)
                     {
-                        var cols = schema.GetColumnsForTable(tableName);
+                        var cols = schema.GetColumnsForTable(scoped.Table.FullName);
                         if (cols != null)
                         {
+                            string aliasPrefix = scoped.EffectiveAlias + ".";
                             foreach (var col in cols)
                             {
                                 if (MatchesPrefix(col.Text, prefix))
                                 {
-                                    results.Add(col);
+                                    results.Add(new CompletionItemData
+                                    {
+                                        Text = aliasPrefix + col.Text,
+                                        InsertText = aliasPrefix + col.InsertText,
+                                        Description = col.Description,
+                                        Kind = col.Kind,
+                                        Priority = col.Priority,
+                                        IconKey = col.IconKey
+                                    });
                                 }
                             }
                         }
@@ -958,22 +1041,42 @@ namespace OpenHintSQL.Completion
                 }
                 else
                 {
-                    // Fallback: search all columns in the database (since database is small)
-                    foreach (var table in schema.Tables.Values)
+                    // Fallback: word-based table detection when no explicit FROM/JOIN found
+                    var referencedTables = GetReferencedTables(fullText, schema);
+                    if (referencedTables.Count > 0)
                     {
-                        foreach (var col in table.Columns)
+                        foreach (var tableName in referencedTables)
                         {
-                            if (MatchesPrefix(col.Name, prefix))
+                            var cols = schema.GetColumnsForTable(tableName);
+                            if (cols != null)
                             {
-                                results.Add(new CompletionItemData
+                                foreach (var col in cols)
                                 {
-                                    Text = col.Name,
-                                    InsertText = col.Name,
-                                    Description = col.DisplayText,
-                                    Kind = CompletionItemKind.Column,
-                                    Priority = 70,
-                                    IconKey = "Column"
-                                });
+                                    if (MatchesPrefix(col.Text, prefix))
+                                        results.Add(col);
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Fallback: search all columns in the database (since database is small)
+                        foreach (var table in schema.Tables.Values)
+                        {
+                            foreach (var col in table.Columns)
+                            {
+                                if (MatchesPrefix(col.Name, prefix))
+                                {
+                                    results.Add(new CompletionItemData
+                                    {
+                                        Text = col.Name,
+                                        InsertText = col.Name,
+                                        Description = col.DisplayText,
+                                        Kind = CompletionItemKind.Column,
+                                        Priority = col.IsPrimaryKey ? 80 : 70,
+                                        IconKey = "Column"
+                                    });
+                                }
                             }
                         }
                     }
