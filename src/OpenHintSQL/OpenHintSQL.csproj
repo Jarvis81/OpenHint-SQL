@@ -61,9 +61,33 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
 
-  <!-- SSMS Assembly References (from SSMS install directory) -->
+  <!-- SSMS Assembly References (from SSMS install directory).
+       SsmsInstallDir may be supplied explicitly (scripts\install.bat passes
+       -p:SsmsInstallDir). When it is not, auto-detect any installed SSMS that
+       ships Microsoft.SqlServer.GridControl.dll — the only assembly the project
+       needs at compile time — so the build works on machines with different SSMS
+       versions/layouts. SSMS 18-20 install to "Program Files (x86)\...\Common7\IDE";
+       SSMS 21+ install to "Program Files\...\Release\Common7\IDE". -->
   <PropertyGroup>
-    <SsmsInstallDir Condition="'$(SsmsInstallDir)' == ''">C:\Program Files (x86)\Microsoft SQL Server Management Studio 20\Common7\IDE</SsmsInstallDir>
+    <_SsmsPF64 Condition="'$(_SsmsPF64)' == ''">$([System.Environment]::GetEnvironmentVariable('ProgramW6432'))</_SsmsPF64>
+    <_SsmsPF64 Condition="'$(_SsmsPF64)' == ''">$(ProgramFiles)</_SsmsPF64>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(SsmsInstallDir)' == ''">
+    <_SsmsGridDll Include="$(MSBuildProgramFiles32)\Microsoft SQL Server Management Studio *\Common7\IDE\Microsoft.SqlServer.GridControl.dll" />
+    <_SsmsGridDll Include="$(MSBuildProgramFiles32)\Microsoft SQL Server Management Studio *\Release\Common7\IDE\Microsoft.SqlServer.GridControl.dll" />
+    <_SsmsGridDll Include="$(_SsmsPF64)\Microsoft SQL Server Management Studio *\Common7\IDE\Microsoft.SqlServer.GridControl.dll" />
+    <_SsmsGridDll Include="$(_SsmsPF64)\Microsoft SQL Server Management Studio *\Release\Common7\IDE\Microsoft.SqlServer.GridControl.dll" />
+  </ItemGroup>
+  <PropertyGroup Condition="'$(SsmsInstallDir)' == ''">
+    <!-- Pick the directory of the first matching GridControl.dll (a machine may
+         have several SSMS versions installed side by side). Resolves to empty
+         when no SSMS is found, so the fallback below applies. -->
+    <SsmsInstallDir>$([System.IO.Path]::GetDirectoryName($([System.String]::Copy('@(_SsmsGridDll)').Split(';')[0])))</SsmsInstallDir>
+  </PropertyGroup>
+  <!-- Last-resort fallback so the historical dev-machine default still applies
+       when nothing was detected (references stay Exists-guarded regardless). -->
+  <PropertyGroup>
+    <SsmsInstallDir Condition="'$(SsmsInstallDir)' == ''">$(MSBuildProgramFiles32)\Microsoft SQL Server Management Studio 20\Common7\IDE</SsmsInstallDir>
   </PropertyGroup>
 
   <ItemGroup>

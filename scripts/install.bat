@@ -91,12 +91,40 @@ if not defined MSBUILD_EXE (
     exit /b 1
 )
 
+REM ── Locate SSMS assemblies for the build ───────────────────
+REM The project compiles against Microsoft.SqlServer.GridControl.dll (shipped by
+REM SSMS). Different SSMS versions live under different folders, so find any
+REM installed copy and pass its IDE path to MSBuild as SsmsInstallDir. Without
+REM this the references silently drop and the build fails with CS0234/CS0246.
+REM   NOTE: paths MUST stay quoted inside the for(...) so the ")" in "(x86)"
+REM   does not close the block early.
+set "SSMS_BUILD_DIR="
+for %%V in (22 21 20 19 18) do (
+    for %%P in (
+        "%ProgramFiles(x86)%\Microsoft SQL Server Management Studio %%V\Common7\IDE"
+        "%ProgramFiles%\Microsoft SQL Server Management Studio %%V\Common7\IDE"
+        "%ProgramFiles(x86)%\Microsoft SQL Server Management Studio %%V\Release\Common7\IDE"
+        "%ProgramFiles%\Microsoft SQL Server Management Studio %%V\Release\Common7\IDE"
+    ) do (
+        if not defined SSMS_BUILD_DIR if exist "%%~P\Microsoft.SqlServer.GridControl.dll" set "SSMS_BUILD_DIR=%%~P"
+    )
+)
+
+if not defined SSMS_BUILD_DIR (
+    echo  ERROR: No SQL Server Management Studio installation was found.
+    echo  OpenHintSQL compiles against SSMS assemblies, so SSMS 18/19/20/21/22
+    echo  must be installed on this machine before running install.bat.
+    pause
+    exit /b 1
+)
+echo  Using SSMS assemblies from: %SSMS_BUILD_DIR%
+
 REM ── Auto-build project ─────────────────────────────────────
 REM -t:Rebuild (not incremental) ensures Menus.ctmenu is re-embedded correctly.
 echo  Building OpenHintSQL (Release, full rebuild)...
-"%MSBUILD_EXE%" "%REPO_ROOT%\src\OpenHintSQL\OpenHintSQL.csproj" -t:Restore -p:Configuration=Release -nologo -verbosity:minimal > "%BUILD_LOG%" 2>&1
+"%MSBUILD_EXE%" "%REPO_ROOT%\src\OpenHintSQL\OpenHintSQL.csproj" -t:Restore -p:Configuration=Release -p:SsmsInstallDir="%SSMS_BUILD_DIR%" -nologo -verbosity:minimal > "%BUILD_LOG%" 2>&1
 if %ERRORLEVEL% equ 0 (
-    "%MSBUILD_EXE%" "%REPO_ROOT%\src\OpenHintSQL\OpenHintSQL.csproj" -t:Rebuild -p:Configuration=Release -nologo -verbosity:minimal >> "%BUILD_LOG%" 2>&1
+    "%MSBUILD_EXE%" "%REPO_ROOT%\src\OpenHintSQL\OpenHintSQL.csproj" -t:Rebuild -p:Configuration=Release -p:SsmsInstallDir="%SSMS_BUILD_DIR%" -nologo -verbosity:minimal >> "%BUILD_LOG%" 2>&1
 )
 if %ERRORLEVEL% neq 0 (
     echo  ERROR: Build failed! Check the errors above.
