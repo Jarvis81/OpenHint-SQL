@@ -751,7 +751,9 @@ namespace OpenHintSQL.Completion
                     : _textView.GetWordBeforeCaretStart();
                 int replaceEnd = item.Kind == CompletionItemKind.JoinSuggestion
                     ? GetJoinSuggestionReplaceEnd(caretPos)
-                    : caretPos;
+                    : IsBracketedIdentifierCompletion(item)
+                        ? GetBracketedIdentifierReplaceEnd(caretPos)
+                        : caretPos;
                 int wordLength = Math.Max(0, replaceEnd - replaceStart);
 
                 if (wordLength >= 0)
@@ -830,6 +832,38 @@ namespace OpenHintSQL.Completion
             catch (Exception ex)
             {
                 Logger.Warn($"GetJoinSuggestionReplaceEnd failed: {ex.Message}");
+                return caretPos;
+            }
+        }
+
+        private static bool IsBracketedIdentifierCompletion(CompletionItemData item)
+        {
+            return item != null &&
+                !string.IsNullOrEmpty(item.InsertText) &&
+                item.InsertText.EndsWith("]", StringComparison.Ordinal) &&
+                IsObjectReferenceCompletion(item);
+        }
+
+        private int GetBracketedIdentifierReplaceEnd(int caretPos)
+        {
+            try
+            {
+                var snapshot = _textView?.TextSnapshot;
+                if (snapshot == null || caretPos >= snapshot.Length)
+                    return caretPos;
+
+                // If a closing bracket sits immediately at the caret, it belongs to the
+                // previously-accepted bracketed identifier. Consume it so accepting a new
+                // completion over e.g. USE [OldDb|] doesn't leave a stray ] behind,
+                // which would produce USE [NewDb]].
+                int end = caretPos;
+                if (end < snapshot.Length && snapshot[end] == ']')
+                    end++;
+                return end;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn($"GetBracketedIdentifierReplaceEnd failed: {ex.Message}");
                 return caretPos;
             }
         }
