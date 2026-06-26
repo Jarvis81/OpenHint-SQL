@@ -273,7 +273,13 @@ namespace OpenHintSQL.Context
         /// </summary>
         /// <param name="text">Full editor text.</param>
         /// <param name="caretOffset">Zero-based caret position within the text.</param>
-        public static TableContextResult GetTableContext(string text, int caretOffset)
+        /// <param name="aliasScopeText">
+        /// Optional text used solely for resolving the alias to a table. When supplied, the
+        /// whole string is scanned for FROM/JOIN clauses instead of only the text up to the
+        /// caret. Needed in a SELECT column list, where the FROM/JOIN clauses sit AFTER the
+        /// caret and so cannot be seen by the up-to-caret scan.
+        /// </param>
+        public static TableContextResult GetTableContext(string text, int caretOffset, string aliasScopeText = null)
         {
             if (string.IsNullOrEmpty(text) || caretOffset < 2)
                 return null;
@@ -326,8 +332,13 @@ namespace OpenHintSQL.Context
             if (string.IsNullOrEmpty(alias))
                 return null;
 
-            // Attempt to resolve the alias by scanning FROM / JOIN clauses
-            var resolved = ResolveAlias(text, limit, alias);
+            // Attempt to resolve the alias by scanning FROM / JOIN clauses. When an explicit
+            // alias scope is supplied (typically the whole current statement, including text
+            // after the caret) resolve against that — a SELECT column list has its FROM/JOIN
+            // after the caret, so the up-to-caret text alone can't map "alias." to its table.
+            var resolved = !string.IsNullOrEmpty(aliasScopeText)
+                ? ResolveAlias(aliasScopeText, aliasScopeText.Length, alias)
+                : ResolveAlias(text, limit, alias);
 
             return new TableContextResult
             {

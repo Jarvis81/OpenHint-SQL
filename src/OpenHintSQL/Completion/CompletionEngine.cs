@@ -921,6 +921,61 @@ namespace OpenHintSQL.Completion
             return batchStart + lastStmtOffset;
         }
 
+        /// <summary>
+        /// Returns the character index in <paramref name="fullText"/> where the SQL statement
+        /// that contains the caret ends. Mirrors <see cref="FindCurrentStatementStart"/> but
+        /// scans forward from the caret: it stops at the next GO batch separator, a bare ';'
+        /// at paren-depth 0, the next top-level DML keyword, or the close of an enclosing
+        /// subquery. Used so FROM/JOIN clauses that appear AFTER the caret (the normal case
+        /// while typing a SELECT column list) are still in scope for alias resolution.
+        /// </summary>
+        private static int FindCurrentStatementEnd(string fullText, int caretOffset)
+        {
+            if (string.IsNullOrEmpty(fullText))
+                return 0;
+
+            int start = Math.Min(Math.Max(caretOffset, 0), fullText.Length);
+
+            // Step 1: bound by the next GO batch separator at or after the caret.
+            int batchEnd = fullText.Length;
+            foreach (Match m in BatchSeparatorPattern.Matches(fullText))
+            {
+                if (m.Index >= start)
+                {
+                    batchEnd = m.Index;
+                    break;
+                }
+            }
+
+            var batchText = fullText.Substring(start, batchEnd - start);
+
+            // Pre-compute the start offsets of DML keywords so each can be tested for depth.
+            var kwStarts = new HashSet<int>();
+            foreach (Match m in StatementStartPattern.Matches(batchText))
+                kwStarts.Add(m.Index);
+
+            // Step 2: scan forward, stopping at the first top-level statement boundary.
+            int depth = 0;
+            for (int i = 0; i < batchText.Length; i++)
+            {
+                char c = batchText[i];
+                if (c == '(') { depth++; continue; }
+                if (c == ')')
+                {
+                    if (depth == 0)
+                        return start + i; // caret was inside a subquery; stop at its close
+                    depth--;
+                    continue;
+                }
+                if (depth == 0 && c == ';')
+                    return start + i;
+                if (depth == 0 && i > 0 && kwStarts.Contains(i))
+                    return start + i; // a new DML statement begins here
+            }
+
+            return batchEnd;
+        }
+
         private static TableInfo ResolveTable(DatabaseSchema schema, string schemaName, string tableName)
         {
             if (!string.IsNullOrEmpty(schemaName))
@@ -1046,8 +1101,19 @@ namespace OpenHintSQL.Completion
                 int stmtStart = FindCurrentStatementStart(fullText, caretOffset);
                 string stmtText = fullText.Substring(stmtStart, caretOffset - stmtStart);
 
-                // Check if we are in a dot context (e.g. "u.Name")
-                var tableContext = SqlContextParser.GetTableContext(stmtText, stmtText.Length);
+                // For table/alias resolution we need the WHOLE current statement, not just
+                // the text up to the caret. In a SELECT column list the FROM/JOIN clauses
+                // come AFTER the caret, so a caret-only scope would never see the aliases
+                // (the reason SELECT used to suggest bare column names while WHERE — where
+                // FROM is already before the caret — got "alias.Column"). The end bound keeps
+                // us inside the current statement so other blocks still don't bleed in.
+                int stmtEnd = FindCurrentStatementEnd(fullText, caretOffset);
+                string stmtScopeText = fullText.Substring(stmtStart, stmtEnd - stmtStart);
+
+                // Check if we are in a dot context (e.g. "u.Name"). Resolve the alias against
+                // the whole statement scope so "alias." works in a SELECT list (FROM is after
+                // the caret) the same way it already does after WHERE.
+                var tableContext = SqlContextParser.GetTableContext(stmtText, stmtText.Length, stmtScopeText);
                 if (tableContext != null)
                 {
                     string targetTable = !string.IsNullOrEmpty(tableContext.ResolvedTable)
@@ -1069,7 +1135,7 @@ namespace OpenHintSQL.Completion
                 }
 
                 // If not in a dot context, find tables referenced in the script with their aliases
-                var scopedTables = ResolveScopedTables(stmtText, schema);
+                var scopedTables = ResolveScopedTables(stmtScopeText, schema);
                 if (scopedTables.Count > 0)
                 {
                     foreach (var scoped in scopedTables)
@@ -1099,7 +1165,7 @@ namespace OpenHintSQL.Completion
                 else
                 {
                     // Fallback: word-based table detection when no explicit FROM/JOIN found
-                    var referencedTables = GetReferencedTables(stmtText, schema);
+                    var referencedTables = GetReferencedTables(stmtScopeText, schema);
                     if (referencedTables.Count > 0)
                     {
                         foreach (var tableName in referencedTables)
