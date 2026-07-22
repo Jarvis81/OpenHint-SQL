@@ -41,40 +41,90 @@ if %ERRORLEVEL% equ 0 (
 REM ── Locate MSBuild ─────────────────────────────────────────
 REM VSCT compilation requires the full .NET Framework MSBuild that ships with
 REM Visual Studio / Build Tools — the .NET Core "dotnet build" CLI cannot run
-REM the VSSDK task that turns Commands\PackageCommands.vsct into the Menus.ctmenu
-REM resource. Prefer vswhere if available so we pick up whatever VS edition the
-REM user has installed.
+REM the VSSDK task that embeds Menus.ctmenu.
+REM
+REM Detection order:
+REM   1. MSBuild.exe already on PATH
+REM   2. vswhere — finds any VS edition or Build Tools without requiring specific components
+REM   3. Known install paths for VS 2022 (64-bit) and VS 2019 (32-bit)
 set "MSBUILD_EXE="
-set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-if exist "%VSWHERE%" (
-    for /f "usebackq tokens=*" %%I in (`"%VSWHERE%" -latest -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe"`) do (
-        if not defined MSBUILD_EXE set "MSBUILD_EXE=%%I"
+
+REM 1. Check PATH
+for /f "delims=" %%I in ('where MSBuild.exe 2^>nul') do (
+    if not defined MSBUILD_EXE set "MSBUILD_EXE=%%I"
+)
+
+REM 2. vswhere — no -requires so it matches every edition and Build Tools install
+if not defined MSBUILD_EXE (
+    set "_VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+    if exist "!_VSWHERE!" (
+        for /f "usebackq delims=" %%I in (`"!_VSWHERE!" -latest -find "MSBuild\**\Bin\MSBuild.exe" 2^>nul`) do (
+            if not defined MSBUILD_EXE set "MSBUILD_EXE=%%I"
+        )
     )
 )
+
+REM 3. Hardcoded fallback paths — VS 2022 (Program Files 64-bit) then VS 2019 (Program Files x86)
+REM    NOTE: paths MUST be quoted with "%%~P" in the if-exist check, otherwise CMD
+REM    splits at the space in "Program Files" and tries to run "C:\Program" as a command.
 if not defined MSBUILD_EXE (
     for %%P in (
         "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe"
         "%ProgramFiles%\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe"
         "%ProgramFiles%\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
         "%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe"
-    ) do (
-        if exist %%P set "MSBUILD_EXE=%%~P"
-    )
+        "%ProgramFiles(x86)%\Microsoft Visual Studio\2019\Enterprise\MSBuild\Current\Bin\MSBuild.exe"
+        "%ProgramFiles(x86)%\Microsoft Visual Studio\2019\Professional\MSBuild\Current\Bin\MSBuild.exe"
+        "%ProgramFiles(x86)%\Microsoft Visual Studio\2019\Community\MSBuild\Current\Bin\MSBuild.exe"
+        "%ProgramFiles(x86)%\Microsoft Visual Studio\2019\BuildTools\MSBuild\Current\Bin\MSBuild.exe"
+    ) do if exist "%%~P" if not defined MSBUILD_EXE set "MSBUILD_EXE=%%~P"
 )
+
 if not defined MSBUILD_EXE (
-    echo  ERROR: Could not find MSBuild from Visual Studio 2022.
-    echo  Install Visual Studio 2022 ^(any edition^) or the Build Tools with
-    echo  the "Visual Studio extension development" workload, then retry.
+    echo  ERROR: Could not find MSBuild.
+    echo  To fix, choose one of:
+    echo    1. Install Visual Studio 2019 or 2022 ^(any edition^)
+    echo    2. Install "Build Tools for Visual Studio" and select the
+    echo       "Visual Studio extension development" workload
+    echo    3. Add MSBuild.exe to your PATH manually
     pause
     exit /b 1
 )
 
+REM ── Locate SSMS assemblies for the build ───────────────────
+REM The project compiles against Microsoft.SqlServer.GridControl.dll (shipped by
+REM SSMS). Different SSMS versions live under different folders, so find any
+REM installed copy and pass its IDE path to MSBuild as SsmsInstallDir. Without
+REM this the references silently drop and the build fails with CS0234/CS0246.
+REM   NOTE: paths MUST stay quoted inside the for(...) so the ")" in "(x86)"
+REM   does not close the block early.
+set "SSMS_BUILD_DIR="
+for %%V in (22 21 20 19 18) do (
+    for %%P in (
+        "%ProgramFiles(x86)%\Microsoft SQL Server Management Studio %%V\Common7\IDE"
+        "%ProgramFiles%\Microsoft SQL Server Management Studio %%V\Common7\IDE"
+        "%ProgramFiles(x86)%\Microsoft SQL Server Management Studio %%V\Release\Common7\IDE"
+        "%ProgramFiles%\Microsoft SQL Server Management Studio %%V\Release\Common7\IDE"
+    ) do (
+        if not defined SSMS_BUILD_DIR if exist "%%~P\Microsoft.SqlServer.GridControl.dll" set "SSMS_BUILD_DIR=%%~P"
+    )
+)
+
+if not defined SSMS_BUILD_DIR (
+    echo  ERROR: No SQL Server Management Studio installation was found.
+    echo  OpenHintSQL compiles against SSMS assemblies, so SSMS 18/19/20/21/22
+    echo  must be installed on this machine before running install.bat.
+    pause
+    exit /b 1
+)
+echo  Using SSMS assemblies from: %SSMS_BUILD_DIR%
+
 REM ── Auto-build project ─────────────────────────────────────
 REM -t:Rebuild (not incremental) ensures Menus.ctmenu is re-embedded correctly.
 echo  Building OpenHintSQL (Release, full rebuild)...
-"%MSBUILD_EXE%" "%REPO_ROOT%\src\OpenHintSQL\OpenHintSQL.csproj" -t:Restore -p:Configuration=Release -nologo -verbosity:minimal > "%BUILD_LOG%" 2>&1
+"%MSBUILD_EXE%" "%REPO_ROOT%\src\OpenHintSQL\OpenHintSQL.csproj" -t:Restore -p:Configuration=Release -p:SsmsInstallDir="%SSMS_BUILD_DIR%" -nologo -verbosity:minimal > "%BUILD_LOG%" 2>&1
 if %ERRORLEVEL% equ 0 (
-    "%MSBUILD_EXE%" "%REPO_ROOT%\src\OpenHintSQL\OpenHintSQL.csproj" -t:Rebuild -p:Configuration=Release -nologo -verbosity:minimal >> "%BUILD_LOG%" 2>&1
+    "%MSBUILD_EXE%" "%REPO_ROOT%\src\OpenHintSQL\OpenHintSQL.csproj" -t:Rebuild -p:Configuration=Release -p:SsmsInstallDir="%SSMS_BUILD_DIR%" -nologo -verbosity:minimal >> "%BUILD_LOG%" 2>&1
 )
 if %ERRORLEVEL% neq 0 (
     echo  ERROR: Build failed! Check the errors above.

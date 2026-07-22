@@ -593,9 +593,13 @@ namespace OpenHintSQL.Completion
             if (limit == 0)
                 return aliases;
 
+            // Restrict alias lookup to the current statement so aliases from an
+            // earlier SELECT/INSERT/UPDATE in the same script are not treated as
+            // conflicts (which would cause unnecessary ta → ta1 suffixes).
+            int stmtStart = FindCurrentStatementStart(fullText, limit);
             var scopeText = excludeCurrentJoin
                 ? GetCompletedJoinScopeText(fullText, limit)
-                : fullText.Substring(0, limit);
+                : fullText.Substring(stmtStart, limit - stmtStart);
 
             foreach (var scoped in ResolveScopedTables(scopeText, schema))
             {
@@ -618,11 +622,21 @@ namespace OpenHintSQL.Completion
             @"(?:FROM|JOIN)\s+" +
             @"(?:\[?(\w+)\]?\.)?" +
             @"\[?(\w+)\]?" +
-            @"(?:\s+(?:AS\s+)?(\w+))?",
+            @"(?:\s+(?:AS\s+)?" + SqlContextParser.AliasKeywordExclusion + @"(\w+))?",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static readonly Regex JoinKeywordPattern = new Regex(
             @"\b(?:JOIN|APPLY)\b",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        // Matches GO batch separator on its own line (SSMS convention).
+        private static readonly Regex BatchSeparatorPattern = new Regex(
+            @"(?m)^\s*GO\b[^\r\n]*$",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        // Top-level DML keywords that start a new SQL statement.
+        private static readonly Regex StatementStartPattern = new Regex(
+            @"\b(?:SELECT|INSERT|UPDATE|DELETE|MERGE)\b",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         /// <summary>
@@ -781,19 +795,185 @@ namespace OpenHintSQL.Completion
             return result;
         }
 
+        /// <summary>
+        /// Builds a comma-separated list of alias.column items for all tables referenced
+        /// in <paramref name="fullText"/>. Used to expand SELECT * to an explicit column list.
+        /// Returns <c>null</c> when expansion is not possible (schema not loaded, no tables found).
+        /// </summary>
+        public static string GetStarExpansion(string fullText, DatabaseSchema schema)
+        {
+            if (schema == null || !schema.IsLoaded || string.IsNullOrEmpty(fullText))
+                return null;
+
+            try
+            {
+                var scopedTables = ResolveScopedTables(fullText, schema);
+
+                if (scopedTables.Count == 0)
+                {
+                    var referencedTables = GetReferencedTables(fullText, schema);
+                    if (referencedTables.Count == 0)
+                        return null;
+
+                    var fallbackCols = new List<string>();
+                    foreach (var tableName in referencedTables)
+                    {
+                        var cols = schema.GetColumnsForTable(tableName);
+                        if (cols != null)
+                            foreach (var col in cols)
+                                fallbackCols.Add(col.InsertText);
+                    }
+                    return fallbackCols.Count > 0 ? string.Join(", ", fallbackCols) : null;
+                }
+
+                var columns = new List<string>();
+                foreach (var scoped in scopedTables)
+                {
+                    var cols = schema.GetColumnsForTable(scoped.Table.FullName);
+                    if (cols == null) continue;
+
+                    string aliasPrefix = scoped.EffectiveAlias + ".";
+                    foreach (var col in cols)
+                        columns.Add(aliasPrefix + col.InsertText);
+                }
+
+                return columns.Count > 0 ? string.Join(", ", columns) : null;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("GetStarExpansion failed", ex);
+                return null;
+            }
+        }
+
         private static string GetCompletedJoinScopeText(string fullText, int caretOffset)
         {
             if (string.IsNullOrEmpty(fullText) || caretOffset <= 0)
                 return string.Empty;
 
             int limit = Math.Min(Math.Max(caretOffset, 0), fullText.Length);
-            var beforeCaret = fullText.Substring(0, limit);
-            var matches = JoinKeywordPattern.Matches(beforeCaret);
+
+            // Restrict to the current statement so previous queries don't pollute the scope.
+            int stmtStart = FindCurrentStatementStart(fullText, limit);
+            var stmtText = fullText.Substring(stmtStart, limit - stmtStart);
+
+            var matches = JoinKeywordPattern.Matches(stmtText);
             if (matches.Count == 0)
-                return beforeCaret;
+                return stmtText;
 
             var currentJoin = matches[matches.Count - 1];
-            return beforeCaret.Substring(0, currentJoin.Index);
+            return stmtText.Substring(0, currentJoin.Index);
+        }
+
+        /// <summary>
+        /// Returns the character index in <paramref name="fullText"/> where the SQL
+        /// statement that contains the caret begins. Scopes to the current GO batch
+        /// and then finds the last SELECT/INSERT/UPDATE/DELETE/MERGE keyword at
+        /// paren-depth 0, also resetting on bare semicolons.
+        /// </summary>
+        private static int FindCurrentStatementStart(string fullText, int limit)
+        {
+            if (string.IsNullOrEmpty(fullText) || limit <= 0)
+                return 0;
+
+            limit = Math.Min(limit, fullText.Length);
+            var textBeforeCaret = fullText.Substring(0, limit);
+
+            // Step 1: jump past the last GO batch separator.
+            int batchStart = 0;
+            var goMatches = BatchSeparatorPattern.Matches(textBeforeCaret);
+            if (goMatches.Count > 0)
+            {
+                var lastGo = goMatches[goMatches.Count - 1];
+                batchStart = lastGo.Index + lastGo.Length;
+            }
+
+            // Step 2: within the batch, find the last DML keyword at paren-depth 0.
+            var batchText = textBeforeCaret.Substring(batchStart);
+            int depth = 0;
+            int lastStmtOffset = 0;
+            int prevScanPos = 0;
+
+            var kwMatches = StatementStartPattern.Matches(batchText);
+            foreach (Match m in kwMatches)
+            {
+                for (int i = prevScanPos; i < m.Index; i++)
+                {
+                    char c = batchText[i];
+                    if (c == '(') depth++;
+                    else if (c == ')' && depth > 0) depth--;
+                    else if (c == ';' && depth == 0) lastStmtOffset = i + 1;
+                }
+                if (depth == 0)
+                    lastStmtOffset = m.Index;
+                prevScanPos = m.Index + m.Length;
+            }
+
+            // Check for trailing ';' after the last keyword.
+            for (int i = prevScanPos; i < batchText.Length; i++)
+            {
+                char c = batchText[i];
+                if (c == '(') depth++;
+                else if (c == ')' && depth > 0) depth--;
+                else if (c == ';' && depth == 0) lastStmtOffset = i + 1;
+            }
+
+            return batchStart + lastStmtOffset;
+        }
+
+        /// <summary>
+        /// Returns the character index in <paramref name="fullText"/> where the SQL statement
+        /// that contains the caret ends. Mirrors <see cref="FindCurrentStatementStart"/> but
+        /// scans forward from the caret: it stops at the next GO batch separator, a bare ';'
+        /// at paren-depth 0, the next top-level DML keyword, or the close of an enclosing
+        /// subquery. Used so FROM/JOIN clauses that appear AFTER the caret (the normal case
+        /// while typing a SELECT column list) are still in scope for alias resolution.
+        /// </summary>
+        private static int FindCurrentStatementEnd(string fullText, int caretOffset)
+        {
+            if (string.IsNullOrEmpty(fullText))
+                return 0;
+
+            int start = Math.Min(Math.Max(caretOffset, 0), fullText.Length);
+
+            // Step 1: bound by the next GO batch separator at or after the caret.
+            int batchEnd = fullText.Length;
+            foreach (Match m in BatchSeparatorPattern.Matches(fullText))
+            {
+                if (m.Index >= start)
+                {
+                    batchEnd = m.Index;
+                    break;
+                }
+            }
+
+            var batchText = fullText.Substring(start, batchEnd - start);
+
+            // Pre-compute the start offsets of DML keywords so each can be tested for depth.
+            var kwStarts = new HashSet<int>();
+            foreach (Match m in StatementStartPattern.Matches(batchText))
+                kwStarts.Add(m.Index);
+
+            // Step 2: scan forward, stopping at the first top-level statement boundary.
+            int depth = 0;
+            for (int i = 0; i < batchText.Length; i++)
+            {
+                char c = batchText[i];
+                if (c == '(') { depth++; continue; }
+                if (c == ')')
+                {
+                    if (depth == 0)
+                        return start + i; // caret was inside a subquery; stop at its close
+                    depth--;
+                    continue;
+                }
+                if (depth == 0 && c == ';')
+                    return start + i;
+                if (depth == 0 && i > 0 && kwStarts.Contains(i))
+                    return start + i; // a new DML statement begins here
+            }
+
+            return batchEnd;
         }
 
         private static TableInfo ResolveTable(DatabaseSchema schema, string schemaName, string tableName)
@@ -825,43 +1005,57 @@ namespace OpenHintSQL.Completion
         }
 
         /// <summary>
-        /// Generates a short alias for <paramref name="tableName"/> that doesn't collide with
-        /// <paramref name="usedAliases"/>. Strategy: first letter of each capital-letter run,
-        /// lowercased; fall back to suffix counter on collision.
+        /// Generates a short alias for <paramref name="tableName"/> that collides neither with
+        /// <paramref name="usedAliases"/> nor with a T-SQL keyword. Strategy: first letter of
+        /// each capital-letter run, lowercased (the acronym); if that is unusable, a short
+        /// prefix of the name; then a numeric suffix. Keyword collisions (e.g. AuditTrail →
+        /// "at", which clashes with the AT TIME ZONE operator) are skipped so SSMS accepts the
+        /// generated alias.
         /// </summary>
         private static string GenerateAlias(string tableName, HashSet<string> usedAliases)
         {
             if (string.IsNullOrEmpty(tableName))
-                return "t";
+                tableName = "t";
 
             var sb = new StringBuilder();
-            bool prevWasLower = false;
             foreach (var c in tableName)
             {
                 if (char.IsUpper(c) || sb.Length == 0)
-                {
                     sb.Append(char.ToLowerInvariant(c));
-                    prevWasLower = false;
-                }
-                else
-                {
-                    prevWasLower = char.IsLower(c);
-                }
             }
 
-            string baseAlias = sb.Length > 0 ? sb.ToString() : char.ToLowerInvariant(tableName[0]).ToString();
+            string acronym = sb.Length > 0 ? sb.ToString() : char.ToLowerInvariant(tableName[0]).ToString();
 
-            if (!usedAliases.Contains(baseAlias))
-                return baseAlias;
+            // 1) The acronym reads best when it is free and not a keyword.
+            if (IsUsableAlias(acronym, usedAliases))
+                return acronym;
 
+            // 2) Fall back to a short lowercase prefix of the name (e.g. "aud" for AuditTrail).
+            string prefix = new string(tableName.Where(char.IsLetterOrDigit).Take(3).ToArray())
+                .ToLowerInvariant();
+            if (IsUsableAlias(prefix, usedAliases))
+                return prefix;
+
+            // 3) Numeric suffixes on the acronym (at2, at3, …) — never a keyword.
             for (int i = 2; i < 100; i++)
             {
-                var candidate = baseAlias + i;
-                if (!usedAliases.Contains(candidate))
+                var candidate = acronym + i;
+                if (IsUsableAlias(candidate, usedAliases))
                     return candidate;
             }
 
-            return baseAlias + Guid.NewGuid().ToString("N").Substring(0, 4);
+            return acronym + Guid.NewGuid().ToString("N").Substring(0, 4);
+        }
+
+        /// <summary>
+        /// True when <paramref name="alias"/> is a non-empty candidate that is neither already
+        /// in use nor a reserved/contextual T-SQL keyword.
+        /// </summary>
+        private static bool IsUsableAlias(string alias, HashSet<string> usedAliases)
+        {
+            return !string.IsNullOrEmpty(alias)
+                && !usedAliases.Contains(alias)
+                && !SqlContextParser.ReservedKeywords.Contains(alias);
         }
 
         /// <summary>
@@ -915,8 +1109,25 @@ namespace OpenHintSQL.Completion
         {
             try
             {
-                // Check if we are in a dot context (e.g. "u.Name")
-                var tableContext = SqlContextParser.GetTableContext(fullText, caretOffset);
+                // Scope alias/table resolution to the current statement only.
+                // Using fullText would bleed aliases from other SELECT blocks into
+                // the current WHERE/SELECT context (the reported bug).
+                int stmtStart = FindCurrentStatementStart(fullText, caretOffset);
+                string stmtText = fullText.Substring(stmtStart, caretOffset - stmtStart);
+
+                // For table/alias resolution we need the WHOLE current statement, not just
+                // the text up to the caret. In a SELECT column list the FROM/JOIN clauses
+                // come AFTER the caret, so a caret-only scope would never see the aliases
+                // (the reason SELECT used to suggest bare column names while WHERE — where
+                // FROM is already before the caret — got "alias.Column"). The end bound keeps
+                // us inside the current statement so other blocks still don't bleed in.
+                int stmtEnd = FindCurrentStatementEnd(fullText, caretOffset);
+                string stmtScopeText = fullText.Substring(stmtStart, stmtEnd - stmtStart);
+
+                // Check if we are in a dot context (e.g. "u.Name"). Resolve the alias against
+                // the whole statement scope so "alias." works in a SELECT list (FROM is after
+                // the caret) the same way it already does after WHERE.
+                var tableContext = SqlContextParser.GetTableContext(stmtText, stmtText.Length, stmtScopeText);
                 if (tableContext != null)
                 {
                     string targetTable = !string.IsNullOrEmpty(tableContext.ResolvedTable)
@@ -937,43 +1148,85 @@ namespace OpenHintSQL.Completion
                     return;
                 }
 
-                // If not in a dot context, find tables referenced in the script
-                var referencedTables = GetReferencedTables(fullText, schema);
-                if (referencedTables.Count > 0)
+                // If not in a dot context, find tables referenced in the script with their aliases
+                var scopedTables = ResolveScopedTables(stmtScopeText, schema);
+                if (scopedTables.Count > 0)
                 {
-                    foreach (var tableName in referencedTables)
+                    // Qualify columns with a prefix only when it is needed to disambiguate:
+                    // more than one table is in scope, or the user explicitly aliased the
+                    // table. A lone, unaliased table (e.g. "DELETE FROM Orders WHERE ") gets
+                    // bare column names instead of "Orders.Column".
+                    bool multipleTables = scopedTables.Count > 1;
+                    foreach (var scoped in scopedTables)
                     {
-                        var cols = schema.GetColumnsForTable(tableName);
-                        if (cols != null)
+                        var cols = schema.GetColumnsForTable(scoped.Table.FullName);
+                        if (cols == null)
+                            continue;
+
+                        bool usePrefix = multipleTables || !string.IsNullOrEmpty(scoped.Alias);
+                        string aliasPrefix = usePrefix ? scoped.EffectiveAlias + "." : string.Empty;
+
+                        foreach (var col in cols)
                         {
-                            foreach (var col in cols)
+                            if (!MatchesPrefix(col.Text, prefix))
+                                continue;
+
+                            if (!usePrefix)
                             {
-                                if (MatchesPrefix(col.Text, prefix))
-                                {
-                                    results.Add(col);
-                                }
+                                results.Add(col);
+                                continue;
                             }
+
+                            results.Add(new CompletionItemData
+                            {
+                                Text = aliasPrefix + col.Text,
+                                InsertText = aliasPrefix + col.InsertText,
+                                Description = col.Description,
+                                Kind = col.Kind,
+                                Priority = col.Priority,
+                                IconKey = col.IconKey
+                            });
                         }
                     }
                 }
                 else
                 {
-                    // Fallback: search all columns in the database (since database is small)
-                    foreach (var table in schema.Tables.Values)
+                    // Fallback: word-based table detection when no explicit FROM/JOIN found
+                    var referencedTables = GetReferencedTables(stmtScopeText, schema);
+                    if (referencedTables.Count > 0)
                     {
-                        foreach (var col in table.Columns)
+                        foreach (var tableName in referencedTables)
                         {
-                            if (MatchesPrefix(col.Name, prefix))
+                            var cols = schema.GetColumnsForTable(tableName);
+                            if (cols != null)
                             {
-                                results.Add(new CompletionItemData
+                                foreach (var col in cols)
                                 {
-                                    Text = col.Name,
-                                    InsertText = col.Name,
-                                    Description = col.DisplayText,
-                                    Kind = CompletionItemKind.Column,
-                                    Priority = 70,
-                                    IconKey = "Column"
-                                });
+                                    if (MatchesPrefix(col.Text, prefix))
+                                        results.Add(col);
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Fallback: search all columns in the database (since database is small)
+                        foreach (var table in schema.Tables.Values)
+                        {
+                            foreach (var col in table.Columns)
+                            {
+                                if (MatchesPrefix(col.Name, prefix))
+                                {
+                                    results.Add(new CompletionItemData
+                                    {
+                                        Text = col.Name,
+                                        InsertText = col.Name,
+                                        Description = col.DisplayText,
+                                        Kind = CompletionItemKind.Column,
+                                        Priority = col.IsPrimaryKey ? 80 : 70,
+                                        IconKey = "Column"
+                                    });
+                                }
                             }
                         }
                     }

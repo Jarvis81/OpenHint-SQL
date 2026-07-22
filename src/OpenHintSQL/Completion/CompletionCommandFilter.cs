@@ -303,6 +303,17 @@ namespace OpenHintSQL.Completion
         {
             try
             {
+                // 0. SELECT * → expand all columns
+                string fullText0 = _textView.GetAllText();
+                int caretOffset0 = _textView.GetCaretPosition();
+                if (IsAfterStarInSelect(fullText0, caretOffset0))
+                {
+                    DismissPopup();
+                    if (TryExpandStarToColumns(fullText0, caretOffset0))
+                        return VSConstants.S_OK;
+                    return VSConstants.E_FAIL;
+                }
+
                 // 1. Try snippet expansion
                 string wordBeforeCaret = _textView.GetWordBeforeCaret();
                 if (!string.IsNullOrEmpty(wordBeforeCaret))
@@ -474,6 +485,15 @@ namespace OpenHintSQL.Completion
                     {
                         DismissPopup();
                     }
+                }
+                else if (typedChar == '*')
+                {
+                    string fullText = _textView.GetAllText();
+                    int caretOffset = _textView.GetCaretPosition();
+                    if (IsAfterStarInSelect(fullText, caretOffset))
+                        ShowStarExpansionHint();
+                    else
+                        DismissPopup();
                 }
                 else
                 {
@@ -830,6 +850,96 @@ namespace OpenHintSQL.Completion
         private static bool IsObjectReferencePrefixChar(char c)
         {
             return char.IsLetterOrDigit(c) || c == '_' || c == '.' || c == '[' || c == ']';
+        }
+
+        /// <summary>
+        /// Returns true when the last non-whitespace character before the caret is a standalone
+        /// <c>*</c> at paren-depth 0 inside a SELECT clause (e.g. <c>SELECT *</c>).
+        /// Returns false for aggregate wildcards such as <c>COUNT(*)</c>.
+        /// </summary>
+        private static bool IsAfterStarInSelect(string text, int caretOffset)
+        {
+            if (string.IsNullOrEmpty(text) || caretOffset <= 0)
+                return false;
+
+            int pos = caretOffset - 1;
+            while (pos >= 0 && char.IsWhiteSpace(text[pos]))
+                pos--;
+
+            if (pos < 0 || text[pos] != '*')
+                return false;
+
+            // Reject * inside parentheses — it's an aggregate wildcard (COUNT(*), etc.)
+            int depth = 0;
+            for (int i = 0; i < pos; i++)
+            {
+                if (text[i] == '(') depth++;
+                else if (text[i] == ')' && depth > 0) depth--;
+            }
+            if (depth > 0)
+                return false;
+
+            return SqlContextParser.GetContext(text, pos) == SqlContext.SelectClause;
+        }
+
+        /// <summary>
+        /// Shows a one-item hint popup informing the user that Tab will expand * to all columns.
+        /// </summary>
+        private void ShowStarExpansionHint()
+        {
+            var hint = new CompletionItemData
+            {
+                Text = "Expand * to all columns",
+                Description = "Press Tab to replace * with the full alias.column list",
+                Kind = CompletionItemKind.Status,
+                Priority = 0
+            };
+            _popup.Show(_textView, new System.Collections.Generic.List<CompletionItemData> { hint });
+        }
+
+        /// <summary>
+        /// Replaces the <c>*</c> before the caret with a comma-separated list of
+        /// alias.column items derived from the current query's FROM/JOIN tables.
+        /// Returns true if the expansion was performed, false if schema is unavailable
+        /// or no tables could be resolved.
+        /// </summary>
+        private bool TryExpandStarToColumns(string fullText, int caretOffset)
+        {
+            try
+            {
+                int starPos = caretOffset - 1;
+                while (starPos >= 0 && char.IsWhiteSpace(fullText[starPos]))
+                    starPos--;
+
+                if (starPos < 0 || fullText[starPos] != '*')
+                    return false;
+
+                string server = null, database = null, connectionString = null;
+                var connInfo = ConnectionTracker.GetActiveConnection();
+                if (connInfo != null)
+                {
+                    server = connInfo.Server;
+                    database = connInfo.Database;
+                    connectionString = connInfo.ConnectionString;
+                }
+
+                var schema = SchemaCache.GetOrLoad(server, database, connectionString);
+                if (schema == null || !schema.IsLoaded)
+                    return false;
+
+                string expanded = CompletionEngine.GetStarExpansion(fullText, schema);
+                if (string.IsNullOrEmpty(expanded))
+                    return false;
+
+                _textView.ReplaceSpan(starPos, 1, expanded);
+                Logger.Diagnostic($"Expanded SELECT * to {expanded.Split(',').Length} column(s)");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("TryExpandStarToColumns failed", ex);
+                return false;
+            }
         }
 
         /// <summary>

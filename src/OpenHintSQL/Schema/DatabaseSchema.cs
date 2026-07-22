@@ -355,7 +355,7 @@ namespace OpenHintSQL.Schema
                     InsertText = col.Name,
                     Description = col.DisplayText,
                     Kind = CompletionItemKind.Column,
-                    Priority = 5,
+                    Priority = col.IsPrimaryKey ? 15 : 5,
                     IconKey = "Column"
                 });
             }
