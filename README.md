@@ -67,12 +67,12 @@ The installer and source-install script auto-detect installed SSMS 18/19/20/21/2
 
 ### Option A — Installer (recommended)
 
-1. Download `OpenHintSQLSetup-1.1.0.exe` from the [v1.1.0 release](https://github.com/Jarvis81/OpenHint-SQL/releases/tag/v1.1.0).
+1. Download `OpenHintSQLSetup-1.0.2.exe` from the [v1.0.2 release](https://github.com/Jarvis81/OpenHint-SQL/releases/tag/v1.0.2).
 2. Close all open SSMS windows.
 3. Run the installer **as Administrator**. It detects your SSMS installations, confirms with you, copies the extension files, and clears the SSMS caches automatically.
 4. Open SSMS and start typing in a query window.
 
-The installer is also referenced from the [v1.1.0 release](https://github.com/Jarvis81/OpenHint-SQL/releases/tag/v1.1.0).
+The installer is also referenced from the [v1.0.2 release](https://github.com/Jarvis81/OpenHint-SQL/releases/tag/v1.0.2).
 
 **Verify it loaded:** View → Output → select **OpenHint SQL** from the dropdown.
 
@@ -102,7 +102,7 @@ Maintainer packaging utilities live under `scripts\` to keep the repository root
 scripts\build-installer.bat
 ```
 
-The installer is written to `dist\OpenHintSQLSetup-1.1.0.exe`. The `dist\` folder is intentionally ignored by Git, so generated installers do not show up as source files.
+The installer is written to `dist\OpenHintSQLSetup-1.0.2.exe`. The `dist\` folder is intentionally ignored by Git, so generated installers do not show up as source files.
 
 ---
 
