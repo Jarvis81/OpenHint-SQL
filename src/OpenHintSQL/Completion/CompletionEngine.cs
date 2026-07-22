@@ -622,7 +622,7 @@ namespace OpenHintSQL.Completion
             @"(?:FROM|JOIN)\s+" +
             @"(?:\[?(\w+)\]?\.)?" +
             @"\[?(\w+)\]?" +
-            @"(?:\s+(?:AS\s+)?(\w+))?",
+            @"(?:\s+(?:AS\s+)?" + SqlContextParser.AliasKeywordExclusion + @"(\w+))?",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static readonly Regex JoinKeywordPattern = new Regex(
@@ -1005,43 +1005,57 @@ namespace OpenHintSQL.Completion
         }
 
         /// <summary>
-        /// Generates a short alias for <paramref name="tableName"/> that doesn't collide with
-        /// <paramref name="usedAliases"/>. Strategy: first letter of each capital-letter run,
-        /// lowercased; fall back to suffix counter on collision.
+        /// Generates a short alias for <paramref name="tableName"/> that collides neither with
+        /// <paramref name="usedAliases"/> nor with a T-SQL keyword. Strategy: first letter of
+        /// each capital-letter run, lowercased (the acronym); if that is unusable, a short
+        /// prefix of the name; then a numeric suffix. Keyword collisions (e.g. AuditTrail →
+        /// "at", which clashes with the AT TIME ZONE operator) are skipped so SSMS accepts the
+        /// generated alias.
         /// </summary>
         private static string GenerateAlias(string tableName, HashSet<string> usedAliases)
         {
             if (string.IsNullOrEmpty(tableName))
-                return "t";
+                tableName = "t";
 
             var sb = new StringBuilder();
-            bool prevWasLower = false;
             foreach (var c in tableName)
             {
                 if (char.IsUpper(c) || sb.Length == 0)
-                {
                     sb.Append(char.ToLowerInvariant(c));
-                    prevWasLower = false;
-                }
-                else
-                {
-                    prevWasLower = char.IsLower(c);
-                }
             }
 
-            string baseAlias = sb.Length > 0 ? sb.ToString() : char.ToLowerInvariant(tableName[0]).ToString();
+            string acronym = sb.Length > 0 ? sb.ToString() : char.ToLowerInvariant(tableName[0]).ToString();
 
-            if (!usedAliases.Contains(baseAlias))
-                return baseAlias;
+            // 1) The acronym reads best when it is free and not a keyword.
+            if (IsUsableAlias(acronym, usedAliases))
+                return acronym;
 
+            // 2) Fall back to a short lowercase prefix of the name (e.g. "aud" for AuditTrail).
+            string prefix = new string(tableName.Where(char.IsLetterOrDigit).Take(3).ToArray())
+                .ToLowerInvariant();
+            if (IsUsableAlias(prefix, usedAliases))
+                return prefix;
+
+            // 3) Numeric suffixes on the acronym (at2, at3, …) — never a keyword.
             for (int i = 2; i < 100; i++)
             {
-                var candidate = baseAlias + i;
-                if (!usedAliases.Contains(candidate))
+                var candidate = acronym + i;
+                if (IsUsableAlias(candidate, usedAliases))
                     return candidate;
             }
 
-            return baseAlias + Guid.NewGuid().ToString("N").Substring(0, 4);
+            return acronym + Guid.NewGuid().ToString("N").Substring(0, 4);
+        }
+
+        /// <summary>
+        /// True when <paramref name="alias"/> is a non-empty candidate that is neither already
+        /// in use nor a reserved/contextual T-SQL keyword.
+        /// </summary>
+        private static bool IsUsableAlias(string alias, HashSet<string> usedAliases)
+        {
+            return !string.IsNullOrEmpty(alias)
+                && !usedAliases.Contains(alias)
+                && !SqlContextParser.ReservedKeywords.Contains(alias);
         }
 
         /// <summary>
@@ -1138,27 +1152,40 @@ namespace OpenHintSQL.Completion
                 var scopedTables = ResolveScopedTables(stmtScopeText, schema);
                 if (scopedTables.Count > 0)
                 {
+                    // Qualify columns with a prefix only when it is needed to disambiguate:
+                    // more than one table is in scope, or the user explicitly aliased the
+                    // table. A lone, unaliased table (e.g. "DELETE FROM Orders WHERE ") gets
+                    // bare column names instead of "Orders.Column".
+                    bool multipleTables = scopedTables.Count > 1;
                     foreach (var scoped in scopedTables)
                     {
                         var cols = schema.GetColumnsForTable(scoped.Table.FullName);
-                        if (cols != null)
+                        if (cols == null)
+                            continue;
+
+                        bool usePrefix = multipleTables || !string.IsNullOrEmpty(scoped.Alias);
+                        string aliasPrefix = usePrefix ? scoped.EffectiveAlias + "." : string.Empty;
+
+                        foreach (var col in cols)
                         {
-                            string aliasPrefix = scoped.EffectiveAlias + ".";
-                            foreach (var col in cols)
+                            if (!MatchesPrefix(col.Text, prefix))
+                                continue;
+
+                            if (!usePrefix)
                             {
-                                if (MatchesPrefix(col.Text, prefix))
-                                {
-                                    results.Add(new CompletionItemData
-                                    {
-                                        Text = aliasPrefix + col.Text,
-                                        InsertText = aliasPrefix + col.InsertText,
-                                        Description = col.Description,
-                                        Kind = col.Kind,
-                                        Priority = col.Priority,
-                                        IconKey = col.IconKey
-                                    });
-                                }
+                                results.Add(col);
+                                continue;
                             }
+
+                            results.Add(new CompletionItemData
+                            {
+                                Text = aliasPrefix + col.Text,
+                                InsertText = aliasPrefix + col.InsertText,
+                                Description = col.Description,
+                                Kind = col.Kind,
+                                Priority = col.Priority,
+                                IconKey = col.IconKey
+                            });
                         }
                     }
                 }

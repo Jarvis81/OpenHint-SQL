@@ -397,14 +397,70 @@ namespace OpenHintSQL.Context
         }
 
         /// <summary>
+        /// Negative lookahead that prevents a reserved keyword from being captured as a
+        /// table alias. When one of these words immediately follows a table reference
+        /// (e.g. "FROM Orders WHERE", "FROM A JOIN B") it marks the start of the next
+        /// clause — not an alias. Without this guard the alias group greedily grabs the
+        /// keyword, so column suggestions get wrongly prefixed (e.g. "WHERE.Id" for
+        /// "DELETE FROM Orders WHERE"), and joined tables introduced with no alias get
+        /// dropped from scope. The trailing \b ensures only whole-word keywords are
+        /// rejected, so real aliases like "ordered" or "wheres" still match.
+        /// </summary>
+        internal const string AliasKeywordExclusion =
+            @"(?!(?:AS|ON|WHERE|GROUP|ORDER|HAVING|SET|INNER|LEFT|RIGHT|FULL|CROSS|OUTER|" +
+            @"JOIN|APPLY|UNION|EXCEPT|INTERSECT|WITH|PIVOT|UNPIVOT|FOR|OPTION|VALUES|" +
+            @"SELECT|INSERT|UPDATE|DELETE|MERGE|FROM|INTO|AND|OR|GO|TABLESAMPLE)\b)";
+
+        /// <summary>
+        /// T-SQL reserved and contextual keywords that must never be emitted as an
+        /// auto-generated table alias. A short acronym alias can land on a keyword
+        /// (e.g. AuditTrail → "at", which collides with the AT TIME ZONE operator;
+        /// OrderReturn → "or"; TableSample → "ts"), which SQL Server then rejects or
+        /// mis-parses. This set is a superset of the words in
+        /// <see cref="AliasKeywordExclusion"/>, so a generated alias is never one the
+        /// alias-resolution regex would refuse to recognise. Lookups are case-insensitive.
+        /// </summary>
+        internal static readonly HashSet<string> ReservedKeywords =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                // Formal T-SQL reserved keywords
+                "ADD", "ALL", "ALTER", "AND", "ANY", "AS", "ASC", "AUTHORIZATION", "BACKUP",
+                "BEGIN", "BETWEEN", "BREAK", "BROWSE", "BULK", "BY", "CASCADE", "CASE", "CHECK",
+                "CHECKPOINT", "CLOSE", "CLUSTERED", "COALESCE", "COLLATE", "COLUMN", "COMMIT",
+                "COMPUTE", "CONSTRAINT", "CONTAINS", "CONTINUE", "CONVERT", "CREATE", "CROSS",
+                "CURRENT", "CURSOR", "DATABASE", "DBCC", "DEALLOCATE", "DECLARE", "DEFAULT",
+                "DELETE", "DENY", "DESC", "DISK", "DISTINCT", "DISTRIBUTED", "DOUBLE", "DROP",
+                "DUMP", "ELSE", "END", "ERRLVL", "ESCAPE", "EXCEPT", "EXEC", "EXECUTE", "EXISTS",
+                "EXIT", "EXTERNAL", "FETCH", "FILE", "FILLFACTOR", "FOR", "FOREIGN", "FREETEXT",
+                "FROM", "FULL", "FUNCTION", "GOTO", "GRANT", "GROUP", "HAVING", "HOLDLOCK",
+                "IDENTITY", "IF", "IN", "INDEX", "INNER", "INSERT", "INTERSECT", "INTO", "IS",
+                "JOIN", "KEY", "KILL", "LEFT", "LIKE", "LINENO", "LOAD", "MERGE", "NATIONAL",
+                "NOCHECK", "NONCLUSTERED", "NOT", "NULL", "NULLIF", "OF", "OFF", "OFFSETS", "ON",
+                "OPEN", "OPTION", "OR", "ORDER", "OUTER", "OVER", "PERCENT", "PIVOT", "PLAN",
+                "PRECISION", "PRIMARY", "PRINT", "PROC", "PROCEDURE", "PUBLIC", "RAISERROR",
+                "READ", "READTEXT", "RECONFIGURE", "REFERENCES", "REPLICATION", "RESTORE",
+                "RESTRICT", "RETURN", "REVERT", "REVOKE", "RIGHT", "ROLLBACK", "ROWCOUNT",
+                "ROWGUIDCOL", "RULE", "SAVE", "SCHEMA", "SELECT", "SET", "SETUSER", "SHUTDOWN",
+                "SOME", "STATISTICS", "TABLE", "TABLESAMPLE", "TEXTSIZE", "THEN", "TO", "TOP",
+                "TRAN", "TRANSACTION", "TRIGGER", "TRUNCATE", "TSEQUAL", "UNION", "UNIQUE",
+                "UNPIVOT", "UPDATE", "UPDATETEXT", "USE", "USER", "VALUES", "VARYING", "VIEW",
+                "WAITFOR", "WHEN", "WHERE", "WHILE", "WITH", "WRITETEXT",
+
+                // Contextual keywords that are not formally reserved but still parse
+                // specially and are unsafe as aliases (short enough to be generated).
+                "APPLY", "AT", "GO", "OFFSET", "ROWS", "RANGE", "NEXT", "ONLY", "TIES",
+                "FIRST", "LAST", "ZONE", "NOWAIT",
+            };
+
+        /// <summary>
         /// Regex pattern for extracting table references from FROM/JOIN clauses.
         /// Captures: optional [schema.] table [alias]
         /// </summary>
         private static readonly Regex TableRefPattern = new Regex(
             @"(?:FROM|JOIN)\s+" +
-            @"(?:\[?(\w+)\]?\.)?" +                 // optional schema
-            @"\[?(\w+)\]?" +                         // table name
-            @"(?:\s+(?:AS\s+)?(\w+))?",              // optional alias
+            @"(?:\[?(\w+)\]?\.)?" +                            // optional schema
+            @"\[?(\w+)\]?" +                                    // table name
+            @"(?:\s+(?:AS\s+)?" + AliasKeywordExclusion + @"(\w+))?",   // optional alias (never a keyword)
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         /// <summary>
