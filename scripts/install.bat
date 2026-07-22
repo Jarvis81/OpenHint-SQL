@@ -219,12 +219,21 @@ xcopy /Y /E "%BUILD_DIR%\Config" "!EXT_DIR!\Config\" >nul
 REM ── Clear SSMS %V% caches ─────────────────────────────────
 echo             Clearing caches...
 
+REM Try to have SSMS re-merge the .pkgdef into its private registry hive in
+REM place. This is what makes new/changed menu commands show up. It's the
+REM non-destructive alternative to deleting privateregistry.bin outright,
+REM which also wipes unrelated user state cached in the same hive (e.g. the
+REM Object Explorer "Connect to Server" dialog's recent server/login MRU).
+"!SSMS_DIR!\Ssms.exe" /updateConfiguration >nul 2>&1
+set "PKGDEF_MERGED=0"
+if !ERRORLEVEL! equ 0 set "PKGDEF_MERGED=1"
+
 set LEGACY_CACHE=%LOCALAPPDATA%\Microsoft\SQL Server Management Studio\%V%.0_IsoShell
-call :clear_cache_root "!LEGACY_CACHE!"
+call :clear_cache_root "!LEGACY_CACHE!" "!PKGDEF_MERGED!"
 
 REM SSMS 21+ moved local cache/private registry to Microsoft\SSMS\major.0_instanceId.
 for /D %%C in ("%LOCALAPPDATA%\Microsoft\SSMS\%V%.0_*") do (
-    call :clear_cache_root "%%~C"
+    call :clear_cache_root "%%~C" "!PKGDEF_MERGED!"
 )
 
 echo  SSMS %V% : installed successfully.
@@ -235,8 +244,11 @@ goto :eof
 REM ============================================================
 :clear_cache_root
 REM  Args: %1 = SSMS local hive/cache root
+REM        %2 = 1 if "Ssms.exe /updateConfiguration" already re-merged the
+REM             pkgdef for this version, 0 if it failed/was unavailable
 REM ============================================================
 set CACHE_ROOT=%~1
+set "PKGDEF_MERGED_FLAG=%~2"
 if "!CACHE_ROOT!"=="" goto :eof
 if not exist "!CACHE_ROOT!" goto :eof
 
@@ -250,9 +262,13 @@ if exist "!CACHE_ROOT!\Extensions" (
     type nul > "!CACHE_ROOT!\Extensions\extensions.configurationchanged" 2>nul
 )
 
-REM VS 2022/SSMS 21+ cache pkgdef registration in privateregistry.bin.
-if exist "!CACHE_ROOT!\privateregistry.bin" (
-    del /F /Q "!CACHE_ROOT!\privateregistry.bin" >nul 2>&1
-    del /F /Q "!CACHE_ROOT!\privateregistry.bin.LOG*" >nul 2>&1
+REM Only fall back to nuking the whole private registry hive (which also
+REM wipes unrelated cached user state) if /updateConfiguration couldn't
+REM merge the pkgdef itself.
+if not "!PKGDEF_MERGED_FLAG!"=="1" (
+    if exist "!CACHE_ROOT!\privateregistry.bin" (
+        del /F /Q "!CACHE_ROOT!\privateregistry.bin" >nul 2>&1
+        del /F /Q "!CACHE_ROOT!\privateregistry.bin.LOG*" >nul 2>&1
+    )
 )
 goto :eof
